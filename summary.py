@@ -85,6 +85,8 @@ def render_pov_note(pov_note: Optional[str]) -> Optional[Panel]:
     # Try JSON first
     try:
         parsed = json.loads(text)
+        if "generated_input" in parsed:
+            del parsed["generated_input"]
         pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
         syntax = Syntax(pretty, "json", line_numbers=False, word_wrap=True)
         return Panel(syntax, title="🧪 PoV Note", border_style="magenta", box=box.ROUNDED)
@@ -244,11 +246,13 @@ def print_entries(console: Console, entries: List[TraceEntry], limit: Optional[i
             table.add_row("Desc", parsed["raw"])
 
         console.print(table)
-
         pov_panel = render_pov_note(e.pov_note)
         if pov_panel:
             console.print(pov_panel)
-
+        try:
+            print(json.loads(e.pov_note.strip())["generated_input"])
+        except:
+            pass
         console.print()  # spacing
 
 
