@@ -1,6 +1,9 @@
 import asyncio
+import json
 import math
+import os
 import random
+import re
 import statistics
 
 from abc import ABC, abstractmethod
@@ -84,11 +87,13 @@ class Classifier[K](AgentGeneric[ClassifierResult[K]], ABC):
     @final
     @property
     def logprobs(self):
-        return True
+        return not self._allow_structured_fallback()
 
     @final
     @property
     def top_logprobs(self):
+        if self._allow_structured_fallback():
+            return None
         # assume there are ~2 possible tokens to continue any given option
         # but, the openai API rejects values above 20
         return min(20, 2 * len(self.options))
@@ -101,8 +106,14 @@ class Classifier[K](AgentGeneric[ClassifierResult[K]], ABC):
     @final
     @property
     def max_completion_tokens(self):
+        if self._allow_structured_fallback():
+            return 96
         # Since we assert all options are single-token, we only need 1 token
         return 1
+
+    @property
+    def structured_output_mode(self) -> bool:
+        return self._allow_structured_fallback()
 
     @property
     def model(self):
@@ -111,6 +122,8 @@ class Classifier[K](AgentGeneric[ClassifierResult[K]], ABC):
         but overrides it to gpt-4o-mini if it returns an unsupported model
         """
         configured = super().model
+        if self._allow_structured_fallback():
+            return configured
         # only openai gpt models support logprobs
         if "gpt" not in configured:
             logger.warning(
@@ -139,7 +152,10 @@ class Classifier[K](AgentGeneric[ClassifierResult[K]], ABC):
         completion = (await self.completion()).unwrap() # no choice but to unwrap
         choice = completion.choices[0]
         logprobs = choice.logprobs
-        assert logprobs is not None
+        if logprobs is None:
+            if not self._allow_structured_fallback():
+                raise AssertionError("logprobs required for classifier; set CLASSIFIER_ALLOW_STRUCTURED=1 to allow fallback")
+            return self._structured_fallback(choice.message.content or "")
         assert len(logprobs.content) == 1, "logprobs should have only one content"
 
         # compute logprob of each classifier option
@@ -156,6 +172,92 @@ class Classifier[K](AgentGeneric[ClassifierResult[K]], ABC):
         self._append_msg(completion.choices[0].message)
         self.terminated = True
         return res
+
+    def _allow_structured_fallback(self) -> bool:
+        return os.getenv("CLASSIFIER_ALLOW_STRUCTURED", "").lower() in {"1", "true", "yes"}
+
+    def _structured_fallback(self, content: str) -> ClassifierResult[K]:
+        content = content.strip()
+        keys = {str(k): k for k in self.options}
+        keys_lower = {str(k).lower(): k for k in self.options}
+
+        def _scale(value: float) -> float:
+            if value > 1.0:
+                value = value / 10.0
+            return max(0.0, min(1.0, value))
+
+        # Try JSON first
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                scores = parsed.get("scores")
+                if isinstance(scores, dict):
+                    raw: dict[K, float] = {}
+                    for key, value in scores.items():
+                        if (match := keys.get(str(key))) is None:
+                            continue
+                        try:
+                            raw[match] = _scale(float(value))
+                        except Exception:
+                            continue
+                    if raw:
+                        res = ClassifierResult(self.re_normalize_dict(raw))
+                        return res
+                if "likely" in parsed:
+                    likely_val = float(parsed["likely"])
+                    likely_val = _scale(likely_val)
+                    res = ClassifierResult({"likely": likely_val, "unlikely": 1.0 - likely_val})
+                    return ClassifierResult(self.re_normalize_dict(res))
+                if "label" in parsed and "confidence" in parsed:
+                    label = str(parsed["label"]).lower()
+                    conf = float(parsed["confidence"])
+                    conf = _scale(conf)
+                    if (match := keys.get(label)) is None:
+                        match = keys_lower.get(label)
+                    if match is not None:
+                        if len(keys) == 1:
+                            res = ClassifierResult({match: 1.0})
+                        else:
+                            remainder = max(0.0, 1.0 - conf)
+                            share = remainder / (len(keys) - 1)
+                            raw = {k: share for k in keys.values()}
+                            raw[match] = conf
+                            res = ClassifierResult(self.re_normalize_dict(raw))
+                        return res
+        except Exception:
+            pass
+
+        # Try direct label match
+        direct = content.strip().lower()
+        if direct in keys_lower:
+            res = ClassifierResult({keys_lower[direct]: 1.0})
+            return res
+
+        # Try a simple regex like "likely: 0.73" or "likely: 7"
+        if "likely" in keys_lower and "unlikely" in keys_lower:
+            match = re.search(r"likely\s*[:=]\s*(\d+(?:\.\d+)?)", content, re.IGNORECASE)
+            if match:
+                likely_val = float(match.group(1))
+                likely_val = _scale(likely_val)
+                res = ClassifierResult({"likely": likely_val, "unlikely": 1.0 - likely_val})
+                return ClassifierResult(self.re_normalize_dict(res))
+
+        # Last resort: keyword heuristic
+        lowered = content.lower()
+        if "likely" in keys_lower and "unlikely" in keys_lower:
+            if "unlikely" in lowered and "likely" not in lowered:
+                res = ClassifierResult({"likely": 0.1, "unlikely": 0.9})
+                return ClassifierResult(self.re_normalize_dict(res))
+            if "likely" in lowered:
+                res = ClassifierResult({"likely": 0.9, "unlikely": 0.1})
+                return ClassifierResult(self.re_normalize_dict(res))
+
+        if len(keys) == 1:
+            res = ClassifierResult({next(iter(keys.values())): 1.0})
+            return res
+
+        res = ClassifierResult({k: 1.0 / len(keys) for k in keys.values()})
+        return ClassifierResult(self.re_normalize_dict(res))
 
     async def classify(self) -> ClassifierResult[K]:
         res = await self.run()

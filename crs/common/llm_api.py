@@ -28,6 +28,8 @@ CONCURRENCY = {
     "claude-4-opus": 60, # TODO: can we increase this further?
     "claude-3-haiku": 80,
     "claude-3-5-haiku": 80,
+    "claude-4-5-haiku": 80,
+    "claude-haiku-4-5": 1000,
 
     "gemini/gemini-2.5-pro": 600,
 
@@ -169,7 +171,7 @@ def replace_in_dict(data: Any, old: str, new: str) -> Any:
         return data.replace(old, new)
     else:
         return data
-    
+
 def function_parts_to_dict(fname: str, fn: Callable[[Any], Any]) -> dict[str, Any]:
     key = (fname, fn.__name__, fn.__doc__ or "")
     if (value := _func_cache.get(key)) is None:
@@ -270,7 +272,11 @@ async def do_completion(args: CompletionArgs) -> dict[str, Any]:
         llm_spend_tracker.get().add(cost)
     except Exception as e:
         cost = 0.0
-        logger.exception("Exception while computing completion cost??", exception=e)
+        message = str(e)
+        if "isn't mapped yet" in message or "not mapped yet" in message:
+            logger.warning("Skipping completion cost for unmapped model", model=model)
+        else:
+            logger.exception("Exception while computing completion cost??", exception=e)
 
     try:
         model_info = litellm.get_model_info(model) # type: ignore
@@ -297,14 +303,18 @@ async def do_completion(args: CompletionArgs) -> dict[str, Any]:
         tokens_total_counter.add(usage.total_tokens, task_attrs)
         tokens_input_counter.add(usage.prompt_tokens, task_attrs)
         tokens_output_counter.add(usage.completion_tokens, task_attrs)
-        tokens_cached_counter.add(usage.prompt_tokens_details.cached_tokens or 0, task_attrs) # type: ignore
+        cached_details = usage.prompt_tokens_details
+        cached_tokens = cached_details.cached_tokens if cached_details is not None else 0
+        tokens_cached_counter.add(cached_tokens or 0, task_attrs) # type: ignore
 
         # report tokens and costs per model
         cost_counter.add(cost, model_attrs)
         tokens_total_counter.add(usage.total_tokens, model_attrs)
         tokens_input_counter.add(usage.prompt_tokens, model_attrs)
         tokens_output_counter.add(usage.completion_tokens, model_attrs)
-        tokens_cached_counter.add(usage.prompt_tokens_details.cached_tokens or 0, model_attrs) # type: ignore
+        cached_details = usage.prompt_tokens_details
+        cached_tokens = cached_details.cached_tokens if cached_details is not None else 0
+        tokens_cached_counter.add(cached_tokens or 0, model_attrs) # type: ignore
 
         headers: dict[str, Any] = res._hidden_params["additional_headers"] # type: ignore
         tokens_limit_gauge.set(int(headers.get("x-ratelimit-limit-tokens", 0)), model_attrs)
@@ -312,7 +322,11 @@ async def do_completion(args: CompletionArgs) -> dict[str, Any]:
         requests_limit_gauge.set(int(headers.get("x-ratelimit-limit-requests", 0)), model_attrs)
         requests_remain_gauge.set(int(headers.get("x-ratelimit-remaining-requests", 0)), model_attrs)
     except Exception as e:
-        logger.exception("Exception while reporting rate metrics", exception=e)
+        message = str(e)
+        if "isn't mapped yet" in message or "not mapped yet" in message:
+            logger.warning("Skipping rate metrics for unmapped model", model=model)
+        else:
+            logger.exception("Exception while reporting rate metrics", exception=e)
 
     return res.model_dump() | {"cost": cost} # type: ignore
 

@@ -5,6 +5,9 @@ that was submitted and run for the final round of the DARPA AI Cyber Challenge h
 July - August 2025. However, it does not necessarily contain all code used in development,
 such as internal code used by Theori for testing, evaluation, and so on.
 
+Adapted to skip fuzzing:
+`python3 stage023_runner.py <source dir> --mode both`
+
 More information about this CRS (including blog posts, information about the previous version, and
 some agent traces produced by running this software) can be found
 [here](https://theori-io.github.io/aixcc-public/index.html).

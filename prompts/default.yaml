@@ -461,10 +461,18 @@ agents:
       </option>
       {% endfor -%}
       </options>
+      {% if agent.structured_output_mode -%}
+      <important>
+      Respond with a JSON object and no other output.
+      Use: {"label": "<option>", "confidence": <1-10>, "reasoning": "..."}
+      Where <option> is one of: {{ agent.options.keys() | join(", ") }}
+      </important>
+      {% else -%}
       <important>
       You must respond ONLY with one of the following options (with no other output before or after):
       {{ agent.options.keys() | join(", ") }}
       </important>
+      {% endif -%}
     user: '{{ agent.details }}'
 
   DedupClassifier:

@@ -197,6 +197,9 @@ class CRSPovProducerBufGen(CRSDynamicDebug):
 class POVProducerResult(BaseModel):
     success: bool = Field(description="Whether you succeeded to produce a PoV AND confirmed it works with the test_pov tool. Do not set this without testing the pov first.")
     failure_reason: Optional[str] = Field(default=None, description="If you failed to produce a PoV, provide a brief summary of why. You may not give up without testing some POVs first.")
+    reasoning: Optional[str] = Field(default=None, description="Brief reasoning for the outcome, including key constraints or assumptions.")
+    generated_input: Optional[str] = Field(default=None, description="The input content or a concise representation of the generated test input that looked promising.")
+    test_command: Optional[str] = Field(default=None, description="A concrete command showing how to run the harness with the generated input.")
 
 class ConfirmedPOVProducerResult(POVProducerResult):
     target: POVTarget

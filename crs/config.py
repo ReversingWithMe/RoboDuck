@@ -124,11 +124,17 @@ env_tokens = [
     ("AZURE_AI_API_BASE", "azure-ai-api"),
 ]
 TOKENS_ETC = Path(pathlib.Path((CRSROOT / "../tokens_etc")).absolute())
-for env_var, filename in env_tokens:
-    if not os.environ.get(env_var):
-        with open(TOKENS_ETC / filename) as f:
-            os.environ[env_var] = f.read().strip()
-
+try:
+    for env_var, filename in env_tokens:
+        if not os.environ.get(env_var):
+            token_path = TOKENS_ETC / filename
+            token_fs_path = token_path.as_posix()
+            if os.path.exists(token_fs_path):
+                with open(token_fs_path) as f:
+                    os.environ[env_var] = f.read().strip()
+except FileNotFoundError:
+    pass
+    
 _ = os.environ.setdefault("AZURE_API_VERSION", "2024-12-01-preview")
 _ = os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", (TOKENS_ETC / "application_default_credentials.json").as_posix())
 

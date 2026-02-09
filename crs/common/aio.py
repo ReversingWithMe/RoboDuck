@@ -77,7 +77,7 @@ OpenBinaryModeWriting: TypeAlias = Literal["wb", "bw", "ab", "ba", "xb", "bx"]
 OpenBinaryModeReading: TypeAlias = Literal["rb", "br", "rbU", "rUb", "Urb", "brU", "bUr", "Ubr"]
 OpenBinaryMode: TypeAlias = OpenBinaryModeUpdating | OpenBinaryModeReading | OpenBinaryModeWriting
 
-async def async_map[A, B](fn: Callable[[A], B], it: AsyncIterator[A]) -> AsyncGenerator[B]: # noqa: ASYNC900 # this is only used from a context manager
+async def async_map[A, B](fn: Callable[[A], B], it: AsyncIterator[A]) -> AsyncGenerator[B, None]: # noqa: ASYNC900 # this is only used from a context manager
     async for item in it:
         yield fn(item)
 
