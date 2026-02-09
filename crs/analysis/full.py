@@ -276,7 +276,10 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
     else:
         cache = None
 
-    max_tokens = get_max_tokens(model) or 65535
+    try:
+        max_tokens = get_max_tokens(model) or 65535
+    except Exception:
+        max_tokens = 65535
     sem = asyncio.Semaphore(50)
     all_files = {sf.path: f"// path: {path}\n{sf.source.decode(errors='replace')}\n" for path, sf in sorted(project.files.items())}
 

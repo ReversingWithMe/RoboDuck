@@ -8,6 +8,19 @@ such as internal code used by Theori for testing, evaluation, and so on.
 Adapted to skip fuzzing:
 `python3 stage023_runner.py <source dir> --mode both`
 
+You may want to adjust concurrency: `./crs/common/llm_api.py`
+
+Example local run:
+```
+OPENAI_API_BASE="http://127.0.0.1:1234/v1" \
+OPENAI_API_KEY="local-key" \
+MODEL_MAP="configs/models-local.toml" \
+python3 stage023_runner.py <directory> \
+  --mode both --no-probs \
+  --model "openai/openai_gpt-oss-20b@q6_k" \
+  --model-multi "openai/openai_gpt-oss-20b@q6_k"
+```
+
 More information about this CRS (including blog posts, information about the previous version, and
 some agent traces produced by running this software) can be found
 [here](https://theori-io.github.io/aixcc-public/index.html).

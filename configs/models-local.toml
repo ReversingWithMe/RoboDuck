@@ -1,0 +1,4 @@
+LikelyVulnClassifier = ["openai/openai_gpt-oss-20b@q6_k"]
+DedupClassifier = ["openai/openai_gpt-oss-20b@q6_k"]
+CRSPovProducerAgent = ["openai/openai_gpt-oss-20b@q6_k"]
+LimitedPovProducerAgent = ["openai/openai_gpt-oss-20b@q6_k"]
