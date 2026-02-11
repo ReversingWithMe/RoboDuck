@@ -3,6 +3,7 @@ from base64 import b64encode
 from types import NoneType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Self, Sequence
 import asyncio
+import os
 import functools
 import gzip
 import inspect
@@ -141,7 +142,13 @@ class AgentGeneric[T](ABC):
 
     @property
     def max_completion_tokens(self) -> Optional[int]:
-        return None
+        value = os.getenv("MAX_COMPLETION_TOKENS")
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
 
     @property
     def logit_bias(self) -> Optional[dict[int, float]]:

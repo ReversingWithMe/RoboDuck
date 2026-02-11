@@ -2106,6 +2106,9 @@ tools:
     params:
       file_name: The relative path of the source file, eg 'src/foo/bar.c'
       line_number: The line number around which to fetch, eg 234
+      line_range: |-
+        (Optional) line range to fetch, formatted as "start,end" or "start:end".
+        If provided, line_number is ignored.
     returns: dict with src info, lines used, and any errors
 
   run_joern_query:

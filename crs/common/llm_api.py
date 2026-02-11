@@ -30,6 +30,8 @@ CONCURRENCY = {
     "claude-3-5-haiku": 80,
     "claude-4-5-haiku": 80,
     "claude-haiku-4-5": 1000,
+    "anthropic/claude-opus-4-6": 90,
+    "anthropic/claude-haiku-4-5": 100,
 
     "gemini/gemini-2.5-pro": 600,
 

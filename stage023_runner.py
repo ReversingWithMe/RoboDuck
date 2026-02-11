@@ -56,6 +56,7 @@ import json
 import os
 import pathlib
 import subprocess
+import uuid
 from dataclasses import asdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator, TypedDict, cast, Optional
@@ -126,7 +127,7 @@ for candidate in DEFAULT_BASE_ENV_PATHS:
 
 from crs import config
 from crs.agents.triage import DedupClassifier
-from crs.agents.vuln_analyzer import LikelyVulnClassifier
+from crs.agents.vuln_analyzer import LikelyVulnClassifier, CRSVulnAnalyzerAgent, VulnAnalysis
 from crs.agents.pov_producer import CRSPovProducerAgent
 from crs.agents.source_questions import SourceQuestionsResult
 from crs.analysis import c_tree_sitter, java_tree_sitter
@@ -134,7 +135,14 @@ from crs.analysis.data import AnalysisProject, AnnotatedReport, SourceFile, Sour
 from crs.analysis.full import analyze_project, analyze_project_multifunc
 from crs.common.llm_api import completion
 from crs.common.prompts import prompt_manager
-from crs.common.types import AnalyzedVuln
+from crs.common.types import (
+    AnalyzedVuln,
+    VulnReport,
+    LineDefinition,
+    FileReferences,
+    FileReference,
+    Result,
+)
 from crs.common.core import CRSError, Ok, Err
 from crs.common.utils import tool_wrap, cached_property
 from crs.modules.project import Harness, HarnessType
@@ -172,6 +180,7 @@ class Stage3Trace(TypedDict):
     dedupe_confidence: float
     triage_note: str
     pov_note: str
+    vuln_analysis: dict[str, object]
 
 
 @dataclass
@@ -191,12 +200,186 @@ class FakeProjectInfo:
     language: str = "c"
 
 
+class FakeSearcher:
+    def __init__(self, analysis_project: AnalysisProject):
+        self.analysis_project = analysis_project
+        self._resolve_tool_annotations()
+
+    def _resolve_tool_annotations(self) -> None:
+        def resolve(fn: Any) -> None:
+            func = fn.__func__ if hasattr(fn, "__func__") else fn
+            try:
+                func.__annotations__ = typing.get_type_hints(func)
+            except Exception:
+                pass
+
+        resolve(self.list_definitions)
+        resolve(self.read_definition)
+        resolve(self.read_source)
+        resolve(self.find_references)
+
+    def _resolve_file(self, file_name: str) -> Optional[SourceFile]:
+        if file_name in self.analysis_project.files:
+            return self.analysis_project.files[file_name]
+        for path, sf in self.analysis_project.files.items():
+            if path.endswith(file_name):
+                return sf
+        return None
+
+    def _member_line(self, member: SourceMember) -> int:
+        return member.file.offset_to_line(member.range.a) + 1
+
+    def _member_range_lines(self, member: SourceMember) -> tuple[int, int]:
+        body_range = getattr(member, "body", member.range)
+        start, end = member.file.range_to_lines(body_range)
+        return start + 1, end + 1
+
+    async def list_definitions(self, path: str) -> Result[list[LineDefinition]]:
+        sf = self._resolve_file(path)
+        if sf is None:
+            return Err(CRSError("file does not exist"))
+        defs: list[LineDefinition] = []
+        for member in self.analysis_project.decls:
+            if member.file.path != sf.path:
+                continue
+            name = member.name.decode(errors="replace")
+            defs.append(LineDefinition(name=name, line=self._member_line(member)))
+        if not defs:
+            return Err(CRSError("no results found"))
+        return Ok(defs)
+
+    async def read_definition(
+        self,
+        name: str,
+        path: Optional[str] = None,
+        line_number: Optional[int] = None,
+        display_lines: bool = True,
+    ) -> Result[dict[str, object]]:
+        _ = line_number, display_lines
+        candidates = []
+        for member in self.analysis_project.decls:
+            if member.name.decode(errors="replace") != name:
+                continue
+            if path and member.file.path != path and not member.file.path.endswith(path):
+                continue
+            candidates.append(member)
+        if not candidates:
+            return Err(CRSError("no results found"))
+        member = candidates[0]
+        start_line, end_line = self._member_range_lines(member)
+        start_offset = member.file.line_index[start_line - 1]
+        end_offset = member.file.line_index[end_line] if end_line < len(member.file.line_index) else len(member.file.source)
+        contents = member.file.source[start_offset:end_offset].decode(errors="replace")
+        return Ok({
+            "contents": contents,
+            "line_start": start_line,
+            "line_end": end_line,
+            "file": member.file.path,
+        })
+
+    async def read_source(
+        self,
+        file_name: str,
+        line_number: Optional[int] = None,
+        line_range: Optional[str] = None,
+    ) -> Result[dict[str, object]]:
+        sf = self._resolve_file(file_name)
+        if sf is None:
+            return Err(CRSError("file does not exist"))
+        if line_range is not None:
+            start_line = None
+            end_line = None
+            if isinstance(line_range, str):
+                parts = [p for p in re.split(r"[,:\s]+", line_range) if p]
+                if len(parts) >= 2:
+                    try:
+                        start_line = int(parts[0])
+                        end_line = int(parts[1])
+                    except ValueError:
+                        start_line = None
+                        end_line = None
+            elif isinstance(line_range, (tuple, list)) and len(line_range) >= 2:
+                try:
+                    start_line = int(line_range[0])
+                    end_line = int(line_range[1])
+                except (TypeError, ValueError):
+                    start_line = None
+                    end_line = None
+
+            if start_line is None or end_line is None:
+                return Err(CRSError("line_range must be two integers"))
+
+            start_line = max(1, start_line)
+            end_line = min(len(sf.line_index) - 1, end_line)
+            start_offset = sf.line_index[start_line - 1]
+            end_offset = sf.line_index[end_line] if end_line < len(sf.line_index) else len(sf.source)
+            contents = sf.source[start_offset:end_offset].decode(errors="replace")
+            return Ok({
+                "contents": contents,
+                "line_start": start_line,
+                "line_end": end_line,
+            })
+
+        if line_number is None:
+            return Err(CRSError("line_number is required when line_range is not provided"))
+
+        line_idx = max(0, line_number - 1)
+        start_line = max(0, line_idx - 3)
+        end_line = min(len(sf.line_index) - 2, line_idx + 3)
+        start_offset = sf.line_index[start_line]
+        end_offset = sf.line_index[end_line + 1] if end_line + 1 < len(sf.line_index) else len(sf.source)
+        contents = sf.source[start_offset:end_offset].decode(errors="replace")
+        return Ok({
+            "contents": contents,
+            "line_start": start_line + 1,
+            "line_end": end_line + 1,
+        })
+
+    async def find_references(
+        self,
+        name: str,
+        path: Optional[str] = None,
+        case_insensitive: bool = False,
+    ) -> Result[list[FileReferences]]:
+        refs: list[FileReferences] = []
+        if case_insensitive:
+            needle = name.lower()
+        else:
+            needle = name
+        for sf in self.analysis_project.files.values():
+            if path and sf.path != path and not sf.path.endswith(path):
+                continue
+            file_refs: list[FileReference] = []
+            text = sf.source.decode(errors="replace")
+            for idx, line in enumerate(text.splitlines(), start=1):
+                hay = line.lower() if case_insensitive else line
+                if needle not in hay:
+                    continue
+                enclosing = ""
+                for member in self.analysis_project.decls:
+                    if member.file.path != sf.path:
+                        continue
+                    start_line, end_line = self._member_range_lines(member)
+                    if start_line <= idx <= end_line:
+                        enclosing = member.name.decode(errors="replace")
+                        break
+                file_refs.append(FileReference(line=idx, content=line.strip(), enclosing_definition=enclosing))
+                if len(file_refs) >= 50:
+                    break
+            if file_refs:
+                refs.append(FileReferences(file_name=sf.path, refs=file_refs))
+        if not refs:
+            return Err(CRSError("no results found"))
+        return Ok(refs)
+
+
 @dataclass
 class FakeCRS:
     project: FakeProject
     harnesses: list[FakeHarness]
     root_dir: pathlib.Path
     analysis_project: AnalysisProject
+    searcher: FakeSearcher
 
     @property
     def harness_paths_str(self) -> str:
@@ -367,6 +550,71 @@ async def run_pov_agent(crs: FakePovCRS, vuln: AnalyzedVuln, model_idx: int = 0)
         return repr(res.response)
 
 
+def _analysis_summary(result: Optional[VulnAnalysis], error: Optional[str]) -> dict[str, object]:
+    if result is None:
+        return {
+            "triggerable": None,
+            "positive": None,
+            "negative": error or "analyzer returned no result",
+        }
+    positive = result.positive.model_dump() if result.positive is not None else None
+    return {
+        "triggerable": result.triggerable,
+        "positive": positive,
+        "negative": result.negative,
+    }
+
+
+def _merge_pov_note(pov_note: str, analysis_payload: dict[str, object]) -> str:
+    try:
+        data = json.loads(pov_note)
+        if isinstance(data, dict):
+            data["analysis"] = analysis_payload
+            return json.dumps(data, indent=2)
+    except Exception:
+        pass
+    return f"{pov_note}\n\n<analysis>\n{json.dumps(analysis_payload, indent=2)}\n</analysis>"
+
+
+async def run_vuln_analyzer(crs: FakeCRS, record: Stage2Record) -> tuple[Optional[VulnAnalysis], Optional[str]]:
+    report = VulnReport(
+        task_uuid=uuid.uuid4(),
+        project_name=crs.project.name,
+        function=record["function"],
+        file=record["file"],
+        description=record["description"],
+    )
+    for member in crs.analysis_project.decls:
+        if member.name.decode(errors="replace") != record["function"]:
+            continue
+        if member.file.path != record["file"] and not member.file.path.endswith(record["file"]):
+            continue
+        start_line, end_line = member.file.range_to_lines(getattr(member, "body", member.range))
+        report.function_range = (start_line + 1, end_line + 1)
+        break
+
+    agent = CRSVulnAnalyzerAgent(crs=crs, report=report)
+    res = await agent.run(max_iters=30)
+    if res.response is None and not res.terminated:
+        agent.append_user_msg(
+            "You have been working for a long time. Please think carefully about how to "
+            "finish your analysis quickly. Make no more than 3 more tool calls before "
+            "producing your final output."
+        )
+        res = await agent.run(max_iters=10)
+    if res.response is None and not res.terminated:
+        agent.append_user_msg(
+            "<important>Disregard your current thought process. This session is ending. "
+            "You MAY NOT make any more queries. You MUST terminate NOW with your best guess for the result."
+            "</important>"
+        )
+        res = await agent.run(max_iters=1)
+
+    if res.response is None:
+        return None, "vuln analyzer did not return a response"
+    return res.response, None
+
+
 def scan_source_files(src_dir: pathlib.Path) -> Iterator[pathlib.Path]:
     for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
@@ -387,9 +635,13 @@ async def parse_source_file(path: pathlib.Path) -> tuple[SourceFile, list[Source
     return sf, decls
 
 
-async def build_analysis_project(src_dir: pathlib.Path) -> AnalysisProject:
+async def build_analysis_project(src_dir: pathlib.Path, use_progress: bool) -> AnalysisProject:
     project = AnalysisProject()
-    for path in scan_source_files(src_dir):
+    paths = list(scan_source_files(src_dir))
+    iterator: Iterable[pathlib.Path] = paths
+    if use_progress and tqdm is not None:
+        iterator = tqdm(paths, desc="Stage 1 parse", total=len(paths), unit="file", leave=True)
+    for path in iterator:
         sf, decls = await parse_source_file(path)
         project.files[str(path)] = sf
         project.decls.extend(decls)
@@ -426,6 +678,7 @@ async def stage0_index(
     cache_root: pathlib.Path,
     project_hash: str,
     excludes: set[str],
+    use_progress: bool,
 ) -> pathlib.Path:
     dest = cache_root / project_hash / project_dir.name
     dest.mkdir(parents=True, exist_ok=True)
@@ -435,6 +688,9 @@ async def stage0_index(
 
     def _build_index() -> list[dict[str, object]]:
         entries: list[dict[str, object]] = []
+        progress = None
+        if use_progress and tqdm is not None:
+            progress = tqdm(desc="Stage 0 index", unit="file", leave=True)
         for root, dirs, files in os.walk(project_dir):
             rel_root = pathlib.Path(root).relative_to(project_dir)
             dirs[:] = [d for d in dirs if d not in excludes]
@@ -452,9 +708,16 @@ async def stage0_index(
                     "size": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns,
                 })
+                if progress is not None:
+                    progress.update(1)
+        if progress is not None:
+            progress.close()
         return entries
 
-    entries = await asyncio.to_thread(_build_index)
+    if use_progress and tqdm is not None:
+        entries = _build_index()
+    else:
+        entries = await asyncio.to_thread(_build_index)
     index_path.write_text(json.dumps(entries, indent=2))
     return index_path
 
@@ -556,11 +819,13 @@ async def stage3_trace(
     trace: list[Stage3Trace] = []
     candidates: list[AnalyzedVuln] = []
     harness = FakeHarness(name="default_harness", source="unknown")
+    searcher = FakeSearcher(analysis_project)
     fake_crs = FakePovCRS(
         project=FakeProject(name=project_name, info=FakeProjectInfo()),
         harnesses=[harness],
         root_dir=root_dir,
         analysis_project=analysis_project,
+        searcher=searcher,
     )
     for record in records:
         vuln_text = record["description"]
@@ -572,20 +837,26 @@ async def stage3_trace(
             conditions=record["summary"],
         )
         fake_crs.current_file = pathlib.Path(record["file"]) if record.get("file") else None
-        pov_context = FakePovAgentContext(crs=fake_crs, vuln=analyzed, close_pov=None)
         batch = await LikelyVulnClassifier.batch_classify(batch_size, project_name, vuln_text, code_text)
         score = batch.max("likely")
         if score < score_threshold:
             continue
-        dedup_result = await DedupClassifier(project_name, analyzed, candidates).classify()
+        analysis_result, analysis_error = await run_vuln_analyzer(fake_crs, record)
+        analysis_payload = _analysis_summary(analysis_result, analysis_error)
+        analyzed_for_dedupe = analyzed
+        if analysis_result is not None and analysis_result.positive is not None:
+            analyzed_for_dedupe = analysis_result.positive
+
+        dedup_result = await DedupClassifier(project_name, analyzed_for_dedupe, candidates).classify()
         key, prob = dedup_result.best()
         dedupe_choice = "NEW" if key == "NEW" else str(key)
         dedupe_confidence = prob
-        candidates.append(analyzed)
+        candidates.append(analyzed_for_dedupe)
         if dedupe_choice != "NEW" and not include_non_new:
             continue
         triage_note = "(disabled) TriageAgent requires a real POV + harness run"
-        pov_note = await run_pov_agent(fake_crs, analyzed, model_idx=0)
+        pov_note = await run_pov_agent(fake_crs, analyzed_for_dedupe, model_idx=0)
+        pov_note = _merge_pov_note(pov_note, analysis_payload)
         trace.append({
             "function": record["function"],
             "file": record["file"],
@@ -596,6 +867,7 @@ async def stage3_trace(
             "dedupe_confidence": dedupe_confidence,
             "triage_note": triage_note,
             "pov_note": pov_note,
+            "vuln_analysis": analysis_payload,
         })
     return trace
 
@@ -629,7 +901,7 @@ async def run(args: argparse.Namespace) -> None:
         cache_root.mkdir(parents=True, exist_ok=True)
         project_hash = args.project_hash or await compute_project_hash(target)
         exclude_set = set(args.ingest_exclude or DEFAULT_INGEST_EXCLUDES)
-        index_path = await stage0_index(target, cache_root, project_hash, exclude_set)
+        index_path = await stage0_index(target, cache_root, project_hash, exclude_set, use_progress)
         ingest_meta.update({
             "hash": project_hash,
             "index": str(index_path),
@@ -640,13 +912,23 @@ async def run(args: argparse.Namespace) -> None:
     else:
         ingest_meta["skipped"] = True
 
-    project = await build_analysis_project(analysis_source)
+    project = await build_analysis_project(analysis_source, use_progress)
     results: list[Stage2Record] = []
 
     if args.mode in ("single", "both"):
-        results.extend(await stage2_single(project, args.model))
+        if use_progress and tqdm is not None:
+            with tqdm(total=1, desc="Stage 2 single", unit="phase", leave=True) as bar:
+                results.extend(await stage2_single(project, args.model))
+                bar.update(1)
+        else:
+            results.extend(await stage2_single(project, args.model))
     if args.mode in ("multi", "both"):
-        results.extend(await stage2_multi(project, args.model_multi))
+        if use_progress and tqdm is not None:
+            with tqdm(total=1, desc="Stage 2 multi", unit="phase", leave=True) as bar:
+                results.extend(await stage2_multi(project, args.model_multi))
+                bar.update(1)
+        else:
+            results.extend(await stage2_multi(project, args.model_multi))
 
     scoring_iter = results
     if use_progress and tqdm is not None:
