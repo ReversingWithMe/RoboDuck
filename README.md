@@ -5,6 +5,8 @@ that was submitted and run for the final round of the DARPA AI Cyber Challenge h
 July - August 2025. However, it does not necessarily contain all code used in development,
 such as internal code used by Theori for testing, evaluation, and so on.
 
+Configure .env file with your secrets, or pass directly as commandline arguements. A helpful `.env.example` is provided.
+
 Adapted to skip fuzzing:
 `python3 stage023_runner.py <source dir> --mode both`
 
