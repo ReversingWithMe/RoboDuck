@@ -2105,6 +2105,8 @@ tools:
       </important>
     params:
       file_name: The relative path of the source file, eg 'src/foo/bar.c'
+      path: |-
+        (Optional) alias for file_name. Use if the caller provides a path field.
       line_number: The line number around which to fetch, eg 234
       line_range: |-
         (Optional) line range to fetch, formatted as "start,end" or "start:end".

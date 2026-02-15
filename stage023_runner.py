@@ -59,7 +59,7 @@ import subprocess
 import uuid
 from dataclasses import asdict
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator, TypedDict, cast, Optional
+from typing import Any, Iterable, Iterator, TypedDict, cast, Optional, Callable
 import typing
 
 try:
@@ -279,11 +279,15 @@ class FakeSearcher:
 
     async def read_source(
         self,
-        file_name: str,
+        file_name: Optional[str] = None,
+        path: Optional[str] = None,
         line_number: Optional[int] = None,
         line_range: Optional[str] = None,
     ) -> Result[dict[str, object]]:
-        sf = self._resolve_file(file_name)
+        target = file_name or path
+        if target is None:
+            return Err(CRSError("file_name or path is required"))
+        sf = self._resolve_file(target)
         if sf is None:
             return Err(CRSError("file does not exist"))
         if line_range is not None:
@@ -322,6 +326,12 @@ class FakeSearcher:
 
         if line_number is None:
             return Err(CRSError("line_number is required when line_range is not provided"))
+
+        if isinstance(line_number, str):
+            try:
+                line_number = int(line_number)
+            except ValueError:
+                return Err(CRSError("line_number must be an integer"))
 
         line_idx = max(0, line_number - 1)
         start_line = max(0, line_idx - 3)
@@ -788,12 +798,21 @@ async def stage2_multi(project: AnalysisProject, model: str) -> list[Stage2Recor
 
 
 async def stage3_scoring(records: Iterable[Stage2Record], project_name: str, batch_size: int) -> list[Stage3Score]:
+    return await stage3_scoring_with_writer(records, project_name, batch_size, writer=None)
+
+
+async def stage3_scoring_with_writer(
+    records: Iterable[Stage2Record],
+    project_name: str,
+    batch_size: int,
+    writer: Optional[Callable[[dict[str, object]], None]],
+) -> list[Stage3Score]:
     scored: list[Stage3Score] = []
     for idx, record in enumerate(records, start=1):
         vuln_text = record["description"]
         code_text = record["code_snippet"]
         batch = await LikelyVulnClassifier.batch_classify(batch_size, project_name, vuln_text, code_text)
-        scored.append({
+        entry: Stage3Score = {
             "index": idx,
             "function": record["function"],
             "file": record["file"],
@@ -802,7 +821,10 @@ async def stage3_scoring(records: Iterable[Stage2Record], project_name: str, bat
             "avg_likely": batch.avg("likely"),
             "max_likely": batch.max("likely"),
             "std_likely": batch.std("likely"),
-        })
+        }
+        scored.append(entry)
+        if writer is not None:
+            writer({"type": "stage3_score", "data": entry})
     return scored
 
 
@@ -815,6 +837,7 @@ async def stage3_trace(
     root_dir: pathlib.Path,
     analysis_project: AnalysisProject,
     include_non_new: bool,
+    writer: Optional[Callable[[dict[str, object]], None]] = None,
 ) -> list[Stage3Trace]:
     trace: list[Stage3Trace] = []
     candidates: list[AnalyzedVuln] = []
@@ -857,7 +880,7 @@ async def stage3_trace(
         triage_note = "(disabled) TriageAgent requires a real POV + harness run"
         pov_note = await run_pov_agent(fake_crs, analyzed_for_dedupe, model_idx=0)
         pov_note = _merge_pov_note(pov_note, analysis_payload)
-        trace.append({
+        entry: Stage3Trace = {
             "function": record["function"],
             "file": record["file"],
             "description": record["description"],
@@ -868,7 +891,10 @@ async def stage3_trace(
             "triage_note": triage_note,
             "pov_note": pov_note,
             "vuln_analysis": analysis_payload,
-        })
+        }
+        trace.append(entry)
+        if writer is not None:
+            writer({"type": "stage3_trace", "data": entry})
     return trace
 
 
@@ -893,6 +919,18 @@ async def run(args: argparse.Namespace) -> None:
         await run_testflight(args.model)
 
     project_name = args.project_name or target.name
+
+    output_format = args.output_format
+    jsonl_writer: Optional[Callable[[dict[str, object]], None]] = None
+    if output_format == "jsonl":
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text("")
+
+        def _write_jsonl(payload: dict[str, object]) -> None:
+            with args.output.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload) + "\n")
+
+        jsonl_writer = _write_jsonl
 
     analysis_source = target
     ingest_meta: dict[str, object] = {"enabled": not args.skip_ingest}
@@ -933,7 +971,7 @@ async def run(args: argparse.Namespace) -> None:
     scoring_iter = results
     if use_progress and tqdm is not None:
         scoring_iter = tqdm(results, desc="Stage 3 scoring", total=len(results), unit="item", leave=True)
-    scored = await stage3_scoring(scoring_iter, project_name, args.batch)
+    scored = await stage3_scoring_with_writer(scoring_iter, project_name, args.batch, writer=None)
     score_values = [entry["max_likely"] for entry in scored]
     quantile_threshold = compute_quantile_threshold(score_values, args.score_quantile)
     if args.use_quantile:
@@ -957,6 +995,7 @@ async def run(args: argparse.Namespace) -> None:
         analysis_source,
         project,
         args.include_non_new,
+        writer=jsonl_writer,
     )
 
     output = {
@@ -975,7 +1014,8 @@ async def run(args: argparse.Namespace) -> None:
         "analysis_source": analysis_source.as_posix(),
     }
 
-    args.output.write_text(json.dumps(output, indent=2))
+    if output_format == "json":
+        args.output.write_text(json.dumps(output, indent=2))
     new_traces = sum(1 for entry in traced if entry.get("dedupe_choice") == "NEW")
     print(f"wrote {args.output} with {len(results)} findings ({len(scored)} scored, {new_traces} traced new)")
 
@@ -999,6 +1039,7 @@ def parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--skip-testflight", action="store_true", help="skip LLM connectivity check")
     _ = parser.add_argument("--project-name", help="label to give the analyzed project (defaults to directory name)")
     _ = parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("stage023-output.json"))
+    _ = parser.add_argument("--output-format", choices=("json", "jsonl"), default="json", help="output file format")
     _ = parser.add_argument("--skip-ingest", action="store_true", help="skip stage 0 ingestion and run analysis straight against the working tree")
     _ = parser.add_argument("--no-probs", action="store_true", help="Bypass logprob requirement from gpt models using structured output.")
     _ = parser.add_argument("--cache-dir", type=pathlib.Path, default=DEFAULT_CACHE_ROOT, help="where to store stage 0 ingest tarballs")
