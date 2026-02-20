@@ -13,6 +13,7 @@ import traceback
 
 from litellm.utils import get_max_tokens
 import litellm
+
 litellm.suppress_debug_info = True
 
 from tqdm import tqdm
@@ -21,56 +22,69 @@ import yaml
 
 from . import c_tree_sitter
 from . import java_tree_sitter
-from .data import AnalysisProject, SourceFile, SourceMember, SourceFunction, AnnotatedReport
+from .data import (
+    AnalysisProject,
+    SourceFile,
+    SourceMember,
+    SourceFunction,
+    AnnotatedReport,
+)
 from .parser import parse_body, parse_body_multifunc
 
 from crs_rust import logger
 from crs.common.prompts import prompt_manager
 
-Function = TypedDict(
-    'Function', {
-        'name': str,
-        'fullname': str
-    }
-)
+Function = TypedDict("Function", {"name": str, "fullname": str})
 
 QueryResult = TypedDict(
-    'QueryResult', {
-        'path': str,
-        'function': Function,
-        'model': str,
-        'messages': list[dict[str, str]],
-        'usage': dict[str, Any],
-        'cost': float,
-        'elapsed': float
-    }
+    "QueryResult",
+    {
+        "path": str,
+        "function": Function,
+        "model": str,
+        "messages": list[dict[str, str]],
+        "usage": dict[str, Any],
+        "cost": float,
+        "elapsed": float,
+    },
 )
 
 RawQueryResult = TypedDict(
-    'RawQueryResult', {
-        'model': str,
-        'messages': list[dict[str, str]],
-        'usage': dict[str, Any],
-        'cost': float,
-        'elapsed': float
-    }
+    "RawQueryResult",
+    {
+        "model": str,
+        "messages": list[dict[str, str]],
+        "usage": dict[str, Any],
+        "cost": float,
+        "elapsed": float,
+    },
 )
 
+
 def unzip_pairs[X, Y](it: Iterable[tuple[X, Y]]) -> tuple[Iterable[X], Iterable[Y]]:
-    return tuple(zip(*it)) # type: ignore
+    return tuple(zip(*it))  # type: ignore
+
 
 async def _crs_completion(model: str, messages: list[dict[str, Any]]):
     from crs.common.llm_api import priority_completion
     from crs.common.workdb import cur_job_priority
     from crs.common.types import Priority
-    return await priority_completion(cur_job_priority.get(Priority.HIGH), model=model, messages=messages)
+
+    return await priority_completion(
+        cur_job_priority.get(Priority.HIGH), model=model, messages=messages
+    )
+
 
 def _cache_key(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(["{role}: {content}".format(**msg) for msg in messages[:-1]])
 
+
 TRIVIAL_RE = re.compile(rb"^[^\[\(\*@>]*$")
 
-def filter_members(members: list[SourceMember], min_lines: int | None = None) -> list[SourceMember]:
+
+def filter_members(
+    members: list[SourceMember], min_lines: int | None = None
+) -> list[SourceMember]:
     result: list[SourceMember] = []
     seen: set[bytes] = set()
     for m in members:
@@ -97,7 +111,14 @@ def filter_members(members: list[SourceMember], min_lines: int | None = None) ->
         result.append(m)
     return result
 
-async def query(member: SourceMember, model: str, system: str, user: str, cache: Optional[dict[str, Any]] = None) -> QueryResult:
+
+async def query(
+    member: SourceMember,
+    model: str,
+    system: str,
+    user: str,
+    cache: Optional[dict[str, Any]] = None,
+) -> QueryResult:
     try:
         messages = [
             {"role": "system", "content": system},
@@ -113,15 +134,21 @@ async def query(member: SourceMember, model: str, system: str, user: str, cache:
         cost = response.cost
         elapsed = time.perf_counter() - start
         message = cast(litellm.Choices, response.choices[0]).message
-        messages.append({
-            "role": message.role,
-            "content": cast(str, message.content),
-        })
+        messages.append(
+            {
+                "role": message.role,
+                "content": cast(str, message.content),
+            }
+        )
         m: Function = {
             "name": member.name.decode(errors="replace"),
-            "fullname": member.fullname.decode(errors="replace")
+            "fullname": member.fullname.decode(errors="replace"),
         }
-        usage: dict[str, Any] = response.usage if isinstance(response.usage, dict) else response.usage.model_dump() # type: ignore
+        usage: dict[str, Any] = (
+            response.usage
+            if isinstance(response.usage, dict)
+            else response.usage.model_dump()
+        )  # type: ignore
         result: QueryResult = {
             "path": member.file.path,
             "function": m,
@@ -136,7 +163,10 @@ async def query(member: SourceMember, model: str, system: str, user: str, cache:
         traceback.print_exc()
         raise
 
-async def query_raw(model: str, system: str, user: str, cache: Optional[dict[str, Any]] = None) -> RawQueryResult:
+
+async def query_raw(
+    model: str, system: str, user: str, cache: Optional[dict[str, Any]] = None
+) -> RawQueryResult:
     try:
         messages = [
             {"role": "system", "content": system},
@@ -152,11 +182,17 @@ async def query_raw(model: str, system: str, user: str, cache: Optional[dict[str
         cost = response.cost
         elapsed = time.perf_counter() - start
         message = cast(litellm.Choices, response.choices[0]).message
-        messages.append({
-            "role": message.role,
-            "content": cast(str, message.content),
-        })
-        usage: dict[str, Any] = response.usage if isinstance(response.usage, dict) else response.usage.model_dump() # type: ignore
+        messages.append(
+            {
+                "role": message.role,
+                "content": cast(str, message.content),
+            }
+        )
+        usage: dict[str, Any] = (
+            response.usage
+            if isinstance(response.usage, dict)
+            else response.usage.model_dump()
+        )  # type: ignore
         result: RawQueryResult = {
             "model": model,
             "messages": messages,
@@ -169,10 +205,12 @@ async def query_raw(model: str, system: str, user: str, cache: Optional[dict[str
         traceback.print_exc()
         raise
 
+
 # TODO: multiple triage views: from the perspective of each harness, versus from the raw source
 # TODO: want compile commands + CU filtering!
 # TODO: there will be extra files in docker - the repo tar / diff they give us will have a more constrained list of files
 # TODO: cache various kinds of analysis, on both a file:line and function basis?
+
 
 def load_cache(cache_path: str, model: str) -> dict[str, Any]:
     cache: dict[str, Any] = {}
@@ -185,7 +223,13 @@ def load_cache(cache_path: str, model: str) -> dict[str, Any]:
             cache[key] = j
     return cache
 
-async def analyze_project(project: AnalysisProject, progress: bool = False, model: Optional[str] = None, cache_path: Optional[str] = None) -> tuple[list[QueryResult], list[AnnotatedReport]]:
+
+async def analyze_project(
+    project: AnalysisProject,
+    progress: bool = False,
+    model: Optional[str] = None,
+    cache_path: Optional[str] = None,
+) -> tuple[list[QueryResult], list[AnnotatedReport]]:
     model = model or "gpt-4o-2024-08-06"
     model_prompts = prompt_manager.model(model)
     prompt_map = {
@@ -200,7 +244,10 @@ async def analyze_project(project: AnalysisProject, progress: bool = False, mode
         cache = None
 
     sem = asyncio.Semaphore(10_000)
-    async def analyze_one(member: SourceMember) -> Optional[tuple[QueryResult, AnnotatedReport]]:
+
+    async def analyze_one(
+        member: SourceMember,
+    ) -> Optional[tuple[QueryResult, AnnotatedReport]]:
         sf = member.file
         lang = sf.path.rsplit(".", 1)[-1]
         prompts = prompt_map.get(lang, unknown_prompts)
@@ -210,35 +257,60 @@ async def analyze_project(project: AnalysisProject, progress: bool = False, mode
         try:
             sf = member.file
             source_range = sf.expand_range_to_lines(member.range)
-            prompts.kwargs.update({
-                "fullname": member.fullname.decode(),
-                "source": sf[source_range].decode(),
-            })
+            prompts.kwargs.update(
+                {
+                    "fullname": member.fullname.decode(),
+                    "source": sf[source_range].decode(),
+                }
+            )
             system = prompts.system
             user = prompts.user
         except UnicodeDecodeError as e:
             _ = pbar.update(1)
-            logger.warning("Exception analyzing {member} with {model}: {exc}", member=member.fullname, model=model, exc=repr(e))
+            logger.warning(
+                "Exception analyzing {member} with {model}: {exc}",
+                member=member.fullname,
+                model=model,
+                exc=repr(e),
+            )
             return None
 
         async with sem:
             result = None
             try:
-                result = await query(member, model=model, system=system, user=user, cache=cache)
-                report = await asyncio.to_thread(parse_body, result["messages"][-1]["content"])
+                result = await query(
+                    member, model=model, system=system, user=user, cache=cache
+                )
+                report = await asyncio.to_thread(
+                    parse_body, result["messages"][-1]["content"]
+                )
             except Exception as e:
                 _ = pbar.update(1)
                 if not result:
-                    logger.exception("Exception analyzing {member} with {model}", member=member.fullname, model=model, exc=e)
+                    logger.exception(
+                        "Exception analyzing {member} with {model}",
+                        member=member.fullname,
+                        model=model,
+                        exc=e,
+                    )
                 else:
-                    logger.warning("Exception analyzing {member} with {model}: {exc}", member=member.fullname, model=model, exc=repr(e))
+                    logger.warning(
+                        "Exception analyzing {member} with {model}: {exc}",
+                        member=member.fullname,
+                        model=model,
+                        exc=repr(e),
+                    )
                 return None
             vulns: list[str] = []
             for vuln in report.vulns:
-                desc = await asyncio.to_thread(yaml.dump, vuln, default_flow_style=False)
+                desc = await asyncio.to_thread(
+                    yaml.dump, vuln, default_flow_style=False
+                )
                 if lang == "java":
                     sanitizer = vuln.get("sanitizer", "")
-                    if sanitizer_desc := getattr(prompts.custom, f"jazzer_{sanitizer}", None):
+                    if sanitizer_desc := getattr(
+                        prompts.custom, f"jazzer_{sanitizer}", None
+                    ):
                         desc = f"{desc}\n\nUsing the {sanitizer!r} Jazzer sanitizer:\n\n{sanitizer_desc}"
                 vulns.append(desc)
             _ = pbar.update(1)
@@ -247,12 +319,12 @@ async def analyze_project(project: AnalysisProject, progress: bool = False, mode
     decls = await asyncio.to_thread(filter_members, project.decls)
     with tqdm(total=len(decls), desc="analysis", disable=not progress) as pbar:
         output = await asyncio.gather(*[analyze_one(member) for member in decls])
-    query_results, reports = unzip_pairs((x for x in output if x is not None))
-    try:
-        llm_results, reports = list(query_results), list(reports)
-    except ValueError:
-        llm_results, reports = [], []
-    return llm_results, reports
+    filtered = [x for x in output if x is not None]
+    if not filtered:
+        return [], []
+    query_results, reports = unzip_pairs(filtered)
+    return list(query_results), list(reports)
+
 
 @dataclass(slots=True)
 class LanguageGroup:
@@ -262,7 +334,13 @@ class LanguageGroup:
     chunksize: int
     totalsize: int
 
-async def analyze_project_multifunc(project: AnalysisProject, progress: bool = False, model: Optional[str] = None, cache_path: Optional[str] = None) -> tuple[list[RawQueryResult], list[AnnotatedReport]]:
+
+async def analyze_project_multifunc(
+    project: AnalysisProject,
+    progress: bool = False,
+    model: Optional[str] = None,
+    cache_path: Optional[str] = None,
+) -> tuple[list[RawQueryResult], list[AnnotatedReport]]:
     model = model or "gemini/gemini-2.5-pro"
     model_prompts = prompt_manager.model(model)
     prompt_map = {
@@ -281,7 +359,10 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
     except Exception:
         max_tokens = 65535
     sem = asyncio.Semaphore(50)
-    all_files = {sf.path: f"// path: {path}\n{sf.source.decode(errors='replace')}\n" for path, sf in sorted(project.files.items())}
+    all_files = {
+        sf.path: f"// path: {path}\n{sf.source.decode(errors='replace')}\n"
+        for path, sf in sorted(project.files.items())
+    }
 
     # TODO: token counting? or split the chunk if we get a context length error?
     maxsize = int(max_tokens * 4)
@@ -314,7 +395,11 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
                     if candidate.path in remaining:
                         next_sf = candidate
                         remaining.remove(candidate.path)
-                        active_tokens |= {t for t in path_to_tokens[candidate.path] if token_count[t] > 1}
+                        active_tokens |= {
+                            t
+                            for t in path_to_tokens[candidate.path]
+                            if token_count[t] > 1
+                        }
                         break
                 else:
                     continue
@@ -323,7 +408,9 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
         if next_sf is None:
             # fall back to any old file
             next_sf = project.files[sorted(remaining)[0]]
-            active_tokens |= {t for t in path_to_tokens[next_sf.path] if token_count[t] > 1}
+            active_tokens |= {
+                t for t in path_to_tokens[next_sf.path] if token_count[t] > 1
+            }
             remaining.remove(next_sf.path)
 
         path = next_sf.path
@@ -359,14 +446,18 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
             group.chunk.clear()
             group.chunksize = 0
 
-    async def analyze_one(lang: str, chunk: str) -> Optional[tuple[RawQueryResult, list[AnnotatedReport]]]:
+    async def analyze_one(
+        lang: str, chunk: str
+    ) -> Optional[tuple[RawQueryResult, list[AnnotatedReport]]]:
         prompts = prompt_map.get(lang, unknown_prompts)
 
         # WARNING: we are mutating prompts.kwargs to avoid calling prompts.bind() again
         # this is _only_ safe if there's no checkpoint before we fetch the .user / .system attrs
-        prompts.kwargs.update({
-            "source": chunk,
-        })
+        prompts.kwargs.update(
+            {
+                "source": chunk,
+            }
+        )
         system = prompts.system
         user = prompts.user
 
@@ -375,12 +466,20 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
             try:
                 result = await query_raw(model, system, user, cache=cache)
                 _ = pbar.update(1)
-                report = await asyncio.to_thread(parse_body_multifunc, result["messages"][-1]["content"])
+                report = await asyncio.to_thread(
+                    parse_body_multifunc, result["messages"][-1]["content"]
+                )
             except Exception as e:
                 if not result:
-                    logger.exception("Exception analyzing multi with {model}", model=model, exc=e)
+                    logger.exception(
+                        "Exception analyzing multi with {model}", model=model, exc=e
+                    )
                 else:
-                    logger.warning("Exception analyzing multi with {model}: {exc}", model=model, exc=repr(e))
+                    logger.warning(
+                        "Exception analyzing multi with {model}: {exc}",
+                        model=model,
+                        exc=repr(e),
+                    )
                 return None
 
             vuln_map: dict[SourceMember, AnnotatedReport] = {}
@@ -410,26 +509,40 @@ async def analyze_project_multifunc(project: AnalysisProject, progress: bool = F
                     if source is not None:
                         desc_map["source"] = source
                     desc = "\n".join(f"{k}: {v}" for k, v in desc_map.items())
-                    if lang == "java" and (sanitizer_desc := getattr(prompts.custom, f"jazzer_{vuln.name}", None)):
+                    if lang == "java" and (
+                        sanitizer_desc := getattr(
+                            prompts.custom, f"jazzer_{vuln.name}", None
+                        )
+                    ):
                         desc = f"{desc}\n\nUsing the {vuln.name!r} Jazzer sanitizer:\n\n{sanitizer_desc}"
                     annotated.vulns.append(desc)
 
             return result, list(vuln_map.values())
 
-    with tqdm(total=sum(len(group.chunks) for group in groups.values()), desc="multifunc", disable=not progress) as pbar:
+    with tqdm(
+        total=sum(len(group.chunks) for group in groups.values()),
+        desc="multifunc",
+        disable=not progress,
+    ) as pbar:
         output: list[Optional[tuple[RawQueryResult, list[AnnotatedReport]]]] = []
         for lang, group in groups.items():
+            if not group.chunks:
+                continue
             output += [await analyze_one(lang, group.chunks[0])]
-            output += await asyncio.gather(*[analyze_one(lang, chunk) for chunk in group.chunks[1:]])
+            output += await asyncio.gather(
+                *[analyze_one(lang, chunk) for chunk in group.chunks[1:]]
+            )
 
-    query_results, report_lists = unzip_pairs((x for x in output if x is not None))
-    try:
-        llm_results, reports = list(query_results), [r for l in report_lists for r in l]
-    except ValueError:
-        llm_results, reports = [], []
+    filtered = [x for x in output if x is not None]
+    if not filtered:
+        return [], []
+    query_results, report_lists = unzip_pairs(filtered)
+    llm_results, reports = list(query_results), [r for l in report_lists for r in l]
     return llm_results, reports
 
+
 # main() impl for testing outside the CRS:
+
 
 def find_files(path: Path, exts: tuple[str]) -> list[Path]:
     if path.is_file():
@@ -441,15 +554,19 @@ def find_files(path: Path, exts: tuple[str]) -> list[Path]:
                 results.append(root / name)
     return results
 
+
 async def main():
-    from crs import config # noqa: F401, force logger setup # pyright: ignore [reportUnusedImport]
+    from crs import config  # noqa: F401, force logger setup # pyright: ignore [reportUnusedImport]
+
     logger.set_level("WARNING")
 
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("src", nargs="+")
     _ = parser.add_argument("--name", help="output name", required=True)
     _ = parser.add_argument("--out", help="output directory", required=True)
-    _ = parser.add_argument("--multifunc", help="use multifunc analysis", action="store_true")
+    _ = parser.add_argument(
+        "--multifunc", help="use multifunc analysis", action="store_true"
+    )
     _ = parser.add_argument("--model", help="use specific model")
     _ = parser.add_argument("--cache", help="cached json from a previous run")
     args = parser.parse_args()
@@ -457,7 +574,7 @@ async def main():
     project = AnalysisProject()
     for root in args.src:
         root = Path(root)
-        for path in tqdm(find_files(root, (".c", ".java")), desc="load files"): # type: ignore
+        for path in tqdm(find_files(root, (".c", ".java")), desc="load files"):  # type: ignore
             # TODO: store root somewhere? different project per root? have a different "project root"?
             source = path.read_bytes()
             path = path.relative_to(root) if path != root else path
@@ -477,9 +594,13 @@ async def main():
     project.build_lut()
 
     if args.multifunc:
-        llm_results, reports = await analyze_project_multifunc(project, progress=True, model=args.model, cache_path=args.cache)
+        llm_results, reports = await analyze_project_multifunc(
+            project, progress=True, model=args.model, cache_path=args.cache
+        )
     else:
-        llm_results, reports = await analyze_project(project, progress=True, model=args.model, cache_path=args.cache)
+        llm_results, reports = await analyze_project(
+            project, progress=True, model=args.model, cache_path=args.cache
+        )
 
     dt = datetime.now(tz=UTC).isoformat()
     name = f"{args.name}_{dt}"
@@ -488,18 +609,23 @@ async def main():
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, name)
 
-    with open(f"{path}-results.jsonl", "w") as f: # noqa: ASYNC230, not in main crs path
+    with open(f"{path}-results.jsonl", "w") as f:  # noqa: ASYNC230, not in main crs path
         for row in llm_results:
             jline = json.dumps(row)
-            _ = f.write(f"{jline}\n") # noqa: ASYNC232, not in main crs path
+            _ = f.write(f"{jline}\n")  # noqa: ASYNC232, not in main crs path
 
-    with open(f"{path}-report.jsonl", "w") as f: # noqa: ASYNC230, not in main crs path
+    with open(f"{path}-report.jsonl", "w") as f:  # noqa: ASYNC230, not in main crs path
         for obj in reports:
             objd = asdict(obj)
             objd.pop("member", None)
-            objd = {"path": obj.member.file.path, "fullname": obj.member.fullname.decode(errors="replace"), **objd}
+            objd = {
+                "path": obj.member.file.path,
+                "fullname": obj.member.fullname.decode(errors="replace"),
+                **objd,
+            }
             jline = json.dumps(objd)
-            _ = f.write(f"{jline}\n") # noqa: ASYNC232, not in main crs path
+            _ = f.write(f"{jline}\n")  # noqa: ASYNC232, not in main crs path
+
 
 if __name__ == "__main__":
     asyncio.run(main())

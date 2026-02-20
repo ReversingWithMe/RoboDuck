@@ -127,7 +127,11 @@ for candidate in DEFAULT_BASE_ENV_PATHS:
 
 from crs import config
 from crs.agents.triage import DedupClassifier
-from crs.agents.vuln_analyzer import LikelyVulnClassifier, CRSVulnAnalyzerAgent, VulnAnalysis
+from crs.agents.vuln_analyzer import (
+    LikelyVulnClassifier,
+    CRSVulnAnalyzerAgent,
+    VulnAnalysis,
+)
 from crs.agents.pov_producer import CRSPovProducerAgent
 from crs.agents.source_questions import SourceQuestionsResult
 from crs.analysis import c_tree_sitter, java_tree_sitter
@@ -260,7 +264,11 @@ class FakeSearcher:
         for member in self.analysis_project.decls:
             if member.name.decode(errors="replace") != name:
                 continue
-            if path and member.file.path != path and not member.file.path.endswith(path):
+            if (
+                path
+                and member.file.path != path
+                and not member.file.path.endswith(path)
+            ):
                 continue
             candidates.append(member)
         if not candidates:
@@ -268,14 +276,20 @@ class FakeSearcher:
         member = candidates[0]
         start_line, end_line = self._member_range_lines(member)
         start_offset = member.file.line_index[start_line - 1]
-        end_offset = member.file.line_index[end_line] if end_line < len(member.file.line_index) else len(member.file.source)
+        end_offset = (
+            member.file.line_index[end_line]
+            if end_line < len(member.file.line_index)
+            else len(member.file.source)
+        )
         contents = member.file.source[start_offset:end_offset].decode(errors="replace")
-        return Ok({
-            "contents": contents,
-            "line_start": start_line,
-            "line_end": end_line,
-            "file": member.file.path,
-        })
+        return Ok(
+            {
+                "contents": contents,
+                "line_start": start_line,
+                "line_end": end_line,
+                "file": member.file.path,
+            }
+        )
 
     async def read_source(
         self,
@@ -316,16 +330,24 @@ class FakeSearcher:
             start_line = max(1, start_line)
             end_line = min(len(sf.line_index) - 1, end_line)
             start_offset = sf.line_index[start_line - 1]
-            end_offset = sf.line_index[end_line] if end_line < len(sf.line_index) else len(sf.source)
+            end_offset = (
+                sf.line_index[end_line]
+                if end_line < len(sf.line_index)
+                else len(sf.source)
+            )
             contents = sf.source[start_offset:end_offset].decode(errors="replace")
-            return Ok({
-                "contents": contents,
-                "line_start": start_line,
-                "line_end": end_line,
-            })
+            return Ok(
+                {
+                    "contents": contents,
+                    "line_start": start_line,
+                    "line_end": end_line,
+                }
+            )
 
         if line_number is None:
-            return Err(CRSError("line_number is required when line_range is not provided"))
+            return Err(
+                CRSError("line_number is required when line_range is not provided")
+            )
 
         if isinstance(line_number, str):
             try:
@@ -337,13 +359,19 @@ class FakeSearcher:
         start_line = max(0, line_idx - 3)
         end_line = min(len(sf.line_index) - 2, line_idx + 3)
         start_offset = sf.line_index[start_line]
-        end_offset = sf.line_index[end_line + 1] if end_line + 1 < len(sf.line_index) else len(sf.source)
+        end_offset = (
+            sf.line_index[end_line + 1]
+            if end_line + 1 < len(sf.line_index)
+            else len(sf.source)
+        )
         contents = sf.source[start_offset:end_offset].decode(errors="replace")
-        return Ok({
-            "contents": contents,
-            "line_start": start_line + 1,
-            "line_end": end_line + 1,
-        })
+        return Ok(
+            {
+                "contents": contents,
+                "line_start": start_line + 1,
+                "line_end": end_line + 1,
+            }
+        )
 
     async def find_references(
         self,
@@ -373,7 +401,11 @@ class FakeSearcher:
                     if start_line <= idx <= end_line:
                         enclosing = member.name.decode(errors="replace")
                         break
-                file_refs.append(FileReference(line=idx, content=line.strip(), enclosing_definition=enclosing))
+                file_refs.append(
+                    FileReference(
+                        line=idx, content=line.strip(), enclosing_definition=enclosing
+                    )
+                )
                 if len(file_refs) >= 50:
                     break
             if file_refs:
@@ -414,28 +446,42 @@ class FakeCRS:
 class FakePovCRS(FakeCRS):
     current_file: Optional[pathlib.Path] = None
 
-    async def source_code_questions(self, question: str, additional_info: str = "", rawdiff: bool = False):
+    async def source_code_questions(
+        self, question: str, additional_info: str = "", rawdiff: bool = False
+    ):
         _ = rawdiff
         note = additional_info.strip()
         extra = f" Additional info: {note}" if note else ""
         snippet = await asyncio.to_thread(self._answer_from_sources, question)
         if snippet:
             return Ok(SourceQuestionsResult(answer=f"{snippet}{extra}"))
-        return Ok(SourceQuestionsResult(answer=f"No match found for: {question}.{extra}"))
+        return Ok(
+            SourceQuestionsResult(answer=f"No match found for: {question}.{extra}")
+        )
 
-    async def source_code_questions_no_rawdiff(self, question: str, additional_info: str = ""):
-        return await self.source_code_questions(question, additional_info, rawdiff=False)
+    async def source_code_questions_no_rawdiff(
+        self, question: str, additional_info: str = ""
+    ):
+        return await self.source_code_questions(
+            question, additional_info, rawdiff=False
+        )
 
     def source_code_questions_for_harness(self, harness_name: str):
         async def source_code_questions(question: str, additional_info: str = ""):
             _ = harness_name
-            return await self.source_code_questions(question, additional_info, rawdiff=False)
+            return await self.source_code_questions(
+                question, additional_info, rawdiff=False
+            )
 
         return source_code_questions
 
     def _answer_from_sources(self, question: str) -> str:
-        tokens = [t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", question) if len(t) > 2]
-        tokens = [t for t in tokens if t not in {"function", "file", "path", "line", "lines"}]
+        tokens = [
+            t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", question) if len(t) > 2
+        ]
+        tokens = [
+            t for t in tokens if t not in {"function", "file", "path", "line", "lines"}
+        ]
         if not tokens:
             return ""
 
@@ -468,14 +514,13 @@ class FakePovCRS(FakeCRS):
                 if len(call_hits) >= 5:
                     break
             if call_hits:
-                answers.append(
-                    f"Call sites for {token}:\n" + "\n".join(call_hits)
-                )
+                answers.append(f"Call sites for {token}:\n" + "\n".join(call_hits))
 
         if answers:
             return "\n\n".join(answers)
 
         return ""
+
 
 class LimitedPovProducerAgent(CRSPovProducerAgent):
     @cached_property
@@ -489,7 +534,9 @@ class LimitedPovProducerAgent(CRSPovProducerAgent):
             return fn
 
         tools = {
-            "source_questions": tool_wrap(resolve_annotations(self.crs.source_code_questions_no_rawdiff)),
+            "source_questions": tool_wrap(
+                resolve_annotations(self.crs.source_code_questions_no_rawdiff)
+            ),
         }
         return tools
 
@@ -502,7 +549,9 @@ class FakePovAgentContext:
 
 
 async def run_prompt(agent_name: str, model: str, agent_context: object) -> str:
-    bound = prompt_manager.model(model).bind(agent_name, kwargs={"agent": agent_context})
+    bound = prompt_manager.model(model).bind(
+        agent_name, kwargs={"agent": agent_context}
+    )
     messages = [
         {"role": "system", "content": bound.system},
         {"role": "user", "content": bound.user},
@@ -526,14 +575,18 @@ async def run_prompt(agent_name: str, model: str, agent_context: object) -> str:
 
 
 async def run_pov_agent(crs: FakePovCRS, vuln: AnalyzedVuln, model_idx: int = 0) -> str:
-    harnesses = [Harness(
-        name=crs.harnesses[0].name,
-        type=HarnessType.LIBFUZZER,
-        source=crs.harnesses[0].source,
-        options="",
-        harness_func=None,
-    )]
-    agent = LimitedPovProducerAgent(crs=crs, vuln=vuln, harnesses=harnesses, close_pov=None, rawdiff=False)
+    harnesses = [
+        Harness(
+            name=crs.harnesses[0].name,
+            type=HarnessType.LIBFUZZER,
+            source=crs.harnesses[0].source,
+            options="",
+            harness_func=None,
+        )
+    ]
+    agent = LimitedPovProducerAgent(
+        crs=crs, vuln=vuln, harnesses=harnesses, close_pov=None, rawdiff=False
+    )
     agent.model_idx = model_idx
     agent.append_user_msg(
         "<important>In stage033_runner we cannot execute harness binaries. "
@@ -560,7 +613,9 @@ async def run_pov_agent(crs: FakePovCRS, vuln: AnalyzedVuln, model_idx: int = 0)
         return repr(res.response)
 
 
-def _analysis_summary(result: Optional[VulnAnalysis], error: Optional[str]) -> dict[str, object]:
+def _analysis_summary(
+    result: Optional[VulnAnalysis], error: Optional[str]
+) -> dict[str, object]:
     if result is None:
         return {
             "triggerable": None,
@@ -586,7 +641,9 @@ def _merge_pov_note(pov_note: str, analysis_payload: dict[str, object]) -> str:
     return f"{pov_note}\n\n<analysis>\n{json.dumps(analysis_payload, indent=2)}\n</analysis>"
 
 
-async def run_vuln_analyzer(crs: FakeCRS, record: Stage2Record) -> tuple[Optional[VulnAnalysis], Optional[str]]:
+async def run_vuln_analyzer(
+    crs: FakeCRS, record: Stage2Record
+) -> tuple[Optional[VulnAnalysis], Optional[str]]:
     report = VulnReport(
         task_uuid=uuid.uuid4(),
         project_name=crs.project.name,
@@ -597,9 +654,13 @@ async def run_vuln_analyzer(crs: FakeCRS, record: Stage2Record) -> tuple[Optiona
     for member in crs.analysis_project.decls:
         if member.name.decode(errors="replace") != record["function"]:
             continue
-        if member.file.path != record["file"] and not member.file.path.endswith(record["file"]):
+        if member.file.path != record["file"] and not member.file.path.endswith(
+            record["file"]
+        ):
             continue
-        start_line, end_line = member.file.range_to_lines(getattr(member, "body", member.range))
+        start_line, end_line = member.file.range_to_lines(
+            getattr(member, "body", member.range)
+        )
         report.function_range = (start_line + 1, end_line + 1)
         break
 
@@ -625,9 +686,48 @@ async def run_vuln_analyzer(crs: FakeCRS, record: Stage2Record) -> tuple[Optiona
     return res.response, None
 
 
-def scan_source_files(src_dir: pathlib.Path) -> Iterator[pathlib.Path]:
+def resolve_file_filters(
+    src_dir: pathlib.Path, raw_filters: list[str]
+) -> list[pathlib.Path]:
+    resolved: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for raw in raw_filters:
+        token = raw.strip()
+        if not token:
+            continue
+        candidate = pathlib.Path(token).expanduser()
+        if not candidate.is_absolute():
+            candidate = src_dir / candidate
+        normalized = candidate.resolve()
+        key = normalized.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(normalized)
+    return resolved
+
+
+def _path_matches_file_filters(
+    path: pathlib.Path, file_filters: list[pathlib.Path]
+) -> bool:
+    if not file_filters:
+        return True
+    for selected in file_filters:
+        if path == selected:
+            return True
+        if selected in path.parents:
+            return True
+    return False
+
+
+def scan_source_files(
+    src_dir: pathlib.Path, file_filters: Optional[list[pathlib.Path]] = None
+) -> Iterator[pathlib.Path]:
+    selected_filters = file_filters or []
     for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
+            continue
+        if not _path_matches_file_filters(path, selected_filters):
             continue
         if path.name.startswith("."):
             continue
@@ -637,20 +737,32 @@ def scan_source_files(src_dir: pathlib.Path) -> Iterator[pathlib.Path]:
             yield path
 
 
-async def parse_source_file(path: pathlib.Path) -> tuple[SourceFile, list[SourceMember]]:
+async def parse_source_file(
+    path: pathlib.Path,
+) -> tuple[SourceFile, list[SourceMember]]:
     source = path.read_bytes()
     sf = SourceFile(str(path), source)
-    parser = c_tree_sitter.parse if path.suffix.lower() == ".c" else java_tree_sitter.parse
+    parser = (
+        c_tree_sitter.parse if path.suffix.lower() == ".c" else java_tree_sitter.parse
+    )
     decls = await asyncio.to_thread(parser, sf)
     return sf, decls
 
 
-async def build_analysis_project(src_dir: pathlib.Path, use_progress: bool) -> AnalysisProject:
+async def build_analysis_project(
+    src_dir: pathlib.Path,
+    use_progress: bool,
+    file_filters: Optional[list[pathlib.Path]] = None,
+) -> AnalysisProject:
     project = AnalysisProject()
-    paths = list(scan_source_files(src_dir))
+    paths = list(scan_source_files(src_dir, file_filters=file_filters))
+    if not paths:
+        raise SystemExit(f"no supported source files found under {src_dir}")
     iterator: Iterable[pathlib.Path] = paths
     if use_progress and tqdm is not None:
-        iterator = tqdm(paths, desc="Stage 1 parse", total=len(paths), unit="file", leave=True)
+        iterator = tqdm(
+            paths, desc="Stage 1 parse", total=len(paths), unit="file", leave=True
+        )
     for path in iterator:
         sf, decls = await parse_source_file(path)
         project.files[str(path)] = sf
@@ -662,11 +774,14 @@ async def build_analysis_project(src_dir: pathlib.Path, use_progress: bool) -> A
 DEFAULT_INGEST_EXCLUDES = {".git", "__pycache__", "tests", "test"}
 DEFAULT_CACHE_ROOT = pathlib.Path(os.fspath(config.CACHE_DIR)) / "stage033-ingest"
 
+
 async def compute_project_hash(project_dir: pathlib.Path) -> str:
     def _inner() -> str:
         if (project_dir / ".git").is_dir():
             try:
-                commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project_dir)
+                commit = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=project_dir
+                )
                 diff = subprocess.check_output(["git", "diff"], cwd=project_dir)
                 h = hashlib.sha256()
                 h.update(commit)
@@ -713,11 +828,13 @@ async def stage0_index(
                     stat = file_path.stat()
                 except FileNotFoundError:
                     continue
-                entries.append({
-                    "path": rel_file.as_posix(),
-                    "size": stat.st_size,
-                    "mtime_ns": stat.st_mtime_ns,
-                })
+                entries.append(
+                    {
+                        "path": rel_file.as_posix(),
+                        "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns,
+                    }
+                )
                 if progress is not None:
                     progress.update(1)
         if progress is not None:
@@ -797,8 +914,12 @@ async def stage2_multi(project: AnalysisProject, model: str) -> list[Stage2Recor
     return flatten_stage2_reports(annotated, "multi", model)
 
 
-async def stage3_scoring(records: Iterable[Stage2Record], project_name: str, batch_size: int) -> list[Stage3Score]:
-    return await stage3_scoring_with_writer(records, project_name, batch_size, writer=None)
+async def stage3_scoring(
+    records: Iterable[Stage2Record], project_name: str, batch_size: int
+) -> list[Stage3Score]:
+    return await stage3_scoring_with_writer(
+        records, project_name, batch_size, writer=None
+    )
 
 
 async def stage3_scoring_with_writer(
@@ -811,7 +932,9 @@ async def stage3_scoring_with_writer(
     for idx, record in enumerate(records, start=1):
         vuln_text = record["description"]
         code_text = record["code_snippet"]
-        batch = await LikelyVulnClassifier.batch_classify(batch_size, project_name, vuln_text, code_text)
+        batch = await LikelyVulnClassifier.batch_classify(
+            batch_size, project_name, vuln_text, code_text
+        )
         entry: Stage3Score = {
             "index": idx,
             "function": record["function"],
@@ -859,8 +982,12 @@ async def stage3_trace(
             description=record["description"],
             conditions=record["summary"],
         )
-        fake_crs.current_file = pathlib.Path(record["file"]) if record.get("file") else None
-        batch = await LikelyVulnClassifier.batch_classify(batch_size, project_name, vuln_text, code_text)
+        fake_crs.current_file = (
+            pathlib.Path(record["file"]) if record.get("file") else None
+        )
+        batch = await LikelyVulnClassifier.batch_classify(
+            batch_size, project_name, vuln_text, code_text
+        )
         score = batch.max("likely")
         if score < score_threshold:
             continue
@@ -870,7 +997,9 @@ async def stage3_trace(
         if analysis_result is not None and analysis_result.positive is not None:
             analyzed_for_dedupe = analysis_result.positive
 
-        dedup_result = await DedupClassifier(project_name, analyzed_for_dedupe, candidates).classify()
+        dedup_result = await DedupClassifier(
+            project_name, analyzed_for_dedupe, candidates
+        ).classify()
         key, prob = dedup_result.best()
         dedupe_choice = "NEW" if key == "NEW" else str(key)
         dedupe_confidence = prob
@@ -900,6 +1029,8 @@ async def stage3_trace(
 
 async def run(args: argparse.Namespace) -> None:
     target = pathlib.Path(args.directory).resolve()
+    if not target.exists():
+        raise SystemExit(f"{target} does not exist")
     if not target.is_dir():
         raise SystemExit(f"{target} is not a directory")
 
@@ -919,6 +1050,8 @@ async def run(args: argparse.Namespace) -> None:
         await run_testflight(args.model)
 
     project_name = args.project_name or target.name
+    function_filters = {name.strip() for name in (args.function or []) if name.strip()}
+    file_filters = resolve_file_filters(target, args.file or [])
 
     output_format = args.output_format
     jsonl_writer: Optional[Callable[[dict[str, object]], None]] = None
@@ -939,19 +1072,49 @@ async def run(args: argparse.Namespace) -> None:
         cache_root.mkdir(parents=True, exist_ok=True)
         project_hash = args.project_hash or await compute_project_hash(target)
         exclude_set = set(args.ingest_exclude or DEFAULT_INGEST_EXCLUDES)
-        index_path = await stage0_index(target, cache_root, project_hash, exclude_set, use_progress)
-        ingest_meta.update({
-            "hash": project_hash,
-            "index": str(index_path),
-            "cache_dir": str(cache_root / project_hash / target.name),
-            "excludes": sorted(exclude_set),
-        })
+        index_path = await stage0_index(
+            target, cache_root, project_hash, exclude_set, use_progress
+        )
+        ingest_meta.update(
+            {
+                "hash": project_hash,
+                "index": str(index_path),
+                "cache_dir": str(cache_root / project_hash / target.name),
+                "excludes": sorted(exclude_set),
+            }
+        )
         print(f"stage0: indexed {index_path}")
     else:
         ingest_meta["skipped"] = True
 
-    project = await build_analysis_project(analysis_source, use_progress)
+    project = await build_analysis_project(
+        analysis_source, use_progress, file_filters=file_filters
+    )
+    if file_filters:
+        parsed_paths = [pathlib.Path(path) for path in project.files]
+        matched_files = sum(
+            1 for path in parsed_paths if _path_matches_file_filters(path, file_filters)
+        )
+        print(f"stage2: filtered files {matched_files}/{len(parsed_paths)}")
+        for selected in file_filters:
+            if not any(
+                _path_matches_file_filters(path, [selected]) for path in parsed_paths
+            ):
+                print(f"warning: --file filter matched no parsed sources: {selected}")
+    if function_filters:
+        original_count = len(project.decls)
+        project.decls = [
+            member
+            for member in project.decls
+            if member.name.decode(errors="replace") in function_filters
+        ]
+        project.build_lut()
+        print(f"stage2: filtered functions {len(project.decls)}/{original_count}")
     results: list[Stage2Record] = []
+    if not project.decls:
+        print(
+            "stage2: no parsed declarations found; stage2 analysis may return empty results"
+        )
 
     if args.mode in ("single", "both"):
         if use_progress and tqdm is not None:
@@ -960,6 +1123,8 @@ async def run(args: argparse.Namespace) -> None:
                 bar.update(1)
         else:
             results.extend(await stage2_single(project, args.model))
+        if not any(record["stage"] == "single" for record in results):
+            print("stage2: single mode produced no findings")
     if args.mode in ("multi", "both"):
         if use_progress and tqdm is not None:
             with tqdm(total=1, desc="Stage 2 multi", unit="phase", leave=True) as bar:
@@ -967,11 +1132,17 @@ async def run(args: argparse.Namespace) -> None:
                 bar.update(1)
         else:
             results.extend(await stage2_multi(project, args.model_multi))
+        if not any(record["stage"] == "multi" for record in results):
+            print("stage2: multi mode produced no findings")
 
     scoring_iter = results
     if use_progress and tqdm is not None:
-        scoring_iter = tqdm(results, desc="Stage 3 scoring", total=len(results), unit="item", leave=True)
-    scored = await stage3_scoring_with_writer(scoring_iter, project_name, args.batch, writer=None)
+        scoring_iter = tqdm(
+            results, desc="Stage 3 scoring", total=len(results), unit="item", leave=True
+        )
+    scored = await stage3_scoring_with_writer(
+        scoring_iter, project_name, args.batch, writer=None
+    )
     score_values = [entry["max_likely"] for entry in scored]
     quantile_threshold = compute_quantile_threshold(score_values, args.score_quantile)
     if args.use_quantile:
@@ -985,7 +1156,13 @@ async def run(args: argparse.Namespace) -> None:
     ]
     trace_iter = thresholded_records
     if use_progress and tqdm is not None:
-        trace_iter = tqdm(thresholded_records, desc="Stage 3 trace", total=len(thresholded_records), unit="item", leave=True)
+        trace_iter = tqdm(
+            thresholded_records,
+            desc="Stage 3 trace",
+            total=len(thresholded_records),
+            unit="item",
+            leave=True,
+        )
     traced = await stage3_trace(
         trace_iter,
         project_name,
@@ -1001,6 +1178,10 @@ async def run(args: argparse.Namespace) -> None:
     output = {
         "project": project_name,
         "directory": target.as_posix(),
+        "stage2_filters": {
+            "functions": sorted(function_filters),
+            "files": [path.as_posix() for path in file_filters],
+        },
         "stage2_findings": results,
         "stage3_scores": scored,
         "stage3_trace": traced,
@@ -1017,35 +1198,127 @@ async def run(args: argparse.Namespace) -> None:
     if output_format == "json":
         args.output.write_text(json.dumps(output, indent=2))
     new_traces = sum(1 for entry in traced if entry.get("dedupe_choice") == "NEW")
-    print(f"wrote {args.output} with {len(results)} findings ({len(scored)} scored, {new_traces} traced new)")
+    print(
+        f"wrote {args.output} with {len(results)} findings ({len(scored)} scored, {new_traces} traced new)"
+    )
 
 
-DEFAULT_MODEL = os.getenv("STAGE023_MODEL") or os.getenv("MODEL") or "anthropic/claude-3.5-2024-12-17"
-DEFAULT_MODEL_MULTI = os.getenv("STAGE023_MODEL_MULTI") or os.getenv("MODEL_MULTI") or DEFAULT_MODEL
+DEFAULT_MODEL = (
+    os.getenv("STAGE023_MODEL")
+    or os.getenv("MODEL")
+    or "anthropic/claude-3.5-2024-12-17"
+)
+DEFAULT_MODEL_MULTI = (
+    os.getenv("STAGE023_MODEL_MULTI") or os.getenv("MODEL_MULTI") or DEFAULT_MODEL
+)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run only stage 2/3 analysis on a local repo")
-    _ = parser.add_argument("directory", type=pathlib.Path, help="path to the repository to analyze")
-    _ = parser.add_argument("--mode", choices=("single", "multi", "both"), default="single")
-    _ = parser.add_argument("--model", default=DEFAULT_MODEL, help="model for the single-function prompt")
-    _ = parser.add_argument("--model-multi", default=DEFAULT_MODEL_MULTI, help="model for multi-function prompt")
-    _ = parser.add_argument("--batch", type=int, default=2, help="LikelyVulnClassifier batch size for scoring")
-    _ = parser.add_argument("--score-threshold", type=float, default=0.1, help="minimum likely score to run deeper stage 3 trace")
-    _ = parser.add_argument("--score-quantile", type=float, default=0.8, help="quantile threshold to match CRS gating")
-    _ = parser.add_argument("--use-quantile", action="store_true", help="apply quantile threshold in addition to fixed score threshold")
-    _ = parser.add_argument("--include-non-new", action="store_true", help="include non-NEW dedupe entries in stage3_trace")
-    _ = parser.add_argument("--no-progress", action="store_true", help="disable progress bars")
-    _ = parser.add_argument("--skip-testflight", action="store_true", help="skip LLM connectivity check")
-    _ = parser.add_argument("--project-name", help="label to give the analyzed project (defaults to directory name)")
-    _ = parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("stage023-output.json"))
-    _ = parser.add_argument("--output-format", choices=("json", "jsonl"), default="json", help="output file format")
-    _ = parser.add_argument("--skip-ingest", action="store_true", help="skip stage 0 ingestion and run analysis straight against the working tree")
-    _ = parser.add_argument("--no-probs", action="store_true", help="Bypass logprob requirement from gpt models using structured output.")
-    _ = parser.add_argument("--cache-dir", type=pathlib.Path, default=DEFAULT_CACHE_ROOT, help="where to store stage 0 ingest tarballs")
-    _ = parser.add_argument("--project-hash", help="override the project hash used for ingestion cache directories")
-    _ = parser.add_argument("--ingest-exclude", nargs="*", default=sorted(DEFAULT_INGEST_EXCLUDES), help="top-level directories or files to skip when creating the ingest tarball")
-    _ = parser.add_argument("--env-file", type=pathlib.Path, help="path to dotenv file (defaults to .env)")
+    parser = argparse.ArgumentParser(
+        description="Run only stage 2/3 analysis on a local repo"
+    )
+    _ = parser.add_argument(
+        "directory", type=pathlib.Path, help="path to the repository to analyze"
+    )
+    _ = parser.add_argument(
+        "--function",
+        action="append",
+        default=[],
+        help="limit stage 2/3 to specific function name (repeatable)",
+    )
+    _ = parser.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        help="limit stage 2/3 to specific file or directory path (repeatable, relative paths resolve from directory)",
+    )
+    _ = parser.add_argument(
+        "--mode", choices=("single", "multi", "both"), default="single"
+    )
+    _ = parser.add_argument(
+        "--model", default=DEFAULT_MODEL, help="model for the single-function prompt"
+    )
+    _ = parser.add_argument(
+        "--model-multi",
+        default=DEFAULT_MODEL_MULTI,
+        help="model for multi-function prompt",
+    )
+    _ = parser.add_argument(
+        "--batch",
+        type=int,
+        default=2,
+        help="LikelyVulnClassifier batch size for scoring",
+    )
+    _ = parser.add_argument(
+        "--score-threshold",
+        type=float,
+        default=0.1,
+        help="minimum likely score to run deeper stage 3 trace",
+    )
+    _ = parser.add_argument(
+        "--score-quantile",
+        type=float,
+        default=0.8,
+        help="quantile threshold to match CRS gating",
+    )
+    _ = parser.add_argument(
+        "--use-quantile",
+        action="store_true",
+        help="apply quantile threshold in addition to fixed score threshold",
+    )
+    _ = parser.add_argument(
+        "--include-non-new",
+        action="store_true",
+        help="include non-NEW dedupe entries in stage3_trace",
+    )
+    _ = parser.add_argument(
+        "--no-progress", action="store_true", help="disable progress bars"
+    )
+    _ = parser.add_argument(
+        "--skip-testflight", action="store_true", help="skip LLM connectivity check"
+    )
+    _ = parser.add_argument(
+        "--project-name",
+        help="label to give the analyzed project (defaults to directory name)",
+    )
+    _ = parser.add_argument(
+        "--output", type=pathlib.Path, default=pathlib.Path("stage023-output.json")
+    )
+    _ = parser.add_argument(
+        "--output-format",
+        choices=("json", "jsonl"),
+        default="json",
+        help="output file format",
+    )
+    _ = parser.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        help="skip stage 0 ingestion and run analysis straight against the working tree",
+    )
+    _ = parser.add_argument(
+        "--no-probs",
+        action="store_true",
+        help="Bypass logprob requirement from gpt models using structured output.",
+    )
+    _ = parser.add_argument(
+        "--cache-dir",
+        type=pathlib.Path,
+        default=DEFAULT_CACHE_ROOT,
+        help="where to store stage 0 ingest tarballs",
+    )
+    _ = parser.add_argument(
+        "--project-hash",
+        help="override the project hash used for ingestion cache directories",
+    )
+    _ = parser.add_argument(
+        "--ingest-exclude",
+        nargs="*",
+        default=sorted(DEFAULT_INGEST_EXCLUDES),
+        help="top-level directories or files to skip when creating the ingest tarball",
+    )
+    _ = parser.add_argument(
+        "--env-file", type=pathlib.Path, help="path to dotenv file (defaults to .env)"
+    )
     return parser.parse_args()
 
 
