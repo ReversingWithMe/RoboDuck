@@ -122,6 +122,7 @@ for candidate in DEFAULT_BASE_ENV_PATHS:
         continue
     env_path = pathlib.Path(candidate)
     if env_path.exists():
+        # Best-effort load to support local runs without extra flags.
         _ = load_env_from_file(env_path, silent=True)
         break
 
@@ -207,6 +208,7 @@ class FakeProjectInfo:
 class FakeSearcher:
     def __init__(self, analysis_project: AnalysisProject):
         self.analysis_project = analysis_project
+        # Tool schemas rely on real type annotations, so resolve them early.
         self._resolve_tool_annotations()
 
     def _resolve_tool_annotations(self) -> None:
@@ -223,6 +225,7 @@ class FakeSearcher:
         resolve(self.find_references)
 
     def _resolve_file(self, file_name: str) -> Optional[SourceFile]:
+        # Allow absolute paths from analysis_project and relative paths from prompts.
         if file_name in self.analysis_project.files:
             return self.analysis_project.files[file_name]
         for path, sf in self.analysis_project.files.items():
@@ -305,17 +308,14 @@ class FakeSearcher:
         if sf is None:
             return Err(CRSError("file does not exist"))
         if line_range is not None:
+            # Parse loose formats emitted by tools or prompts and clamp to file bounds.
             start_line = None
             end_line = None
             if isinstance(line_range, str):
-                parts = [p for p in re.split(r"[,:\s]+", line_range) if p]
-                if len(parts) >= 2:
-                    try:
-                        start_line = int(parts[0])
-                        end_line = int(parts[1])
-                    except ValueError:
-                        start_line = None
-                        end_line = None
+                nums = re.findall(r"\d+", line_range)
+                if len(nums) >= 2:
+                    start_line = int(nums[0])
+                    end_line = int(nums[1])
             elif isinstance(line_range, (tuple, list)) and len(line_range) >= 2:
                 try:
                     start_line = int(line_range[0])
@@ -325,7 +325,7 @@ class FakeSearcher:
                     end_line = None
 
             if start_line is None or end_line is None:
-                return Err(CRSError("line_range must be two integers"))
+                return Err(CRSError("line_range must include two integers"))
 
             start_line = max(1, start_line)
             end_line = min(len(sf.line_index) - 1, end_line)
@@ -644,6 +644,7 @@ def _merge_pov_note(pov_note: str, analysis_payload: dict[str, object]) -> str:
 async def run_vuln_analyzer(
     crs: FakeCRS, record: Stage2Record
 ) -> tuple[Optional[VulnAnalysis], Optional[str]]:
+    # Mirror CRS analyzer behavior so local runs get comparable triggerability judgments.
     report = VulnReport(
         task_uuid=uuid.uuid4(),
         project_name=crs.project.name,
@@ -756,6 +757,7 @@ async def build_analysis_project(
 ) -> AnalysisProject:
     project = AnalysisProject()
     paths = list(scan_source_files(src_dir, file_filters=file_filters))
+    # Fail fast when the input tree has no relevant sources.
     if not paths:
         raise SystemExit(f"no supported source files found under {src_dir}")
     iterator: Iterable[pathlib.Path] = paths
@@ -805,6 +807,7 @@ async def stage0_index(
     excludes: set[str],
     use_progress: bool,
 ) -> pathlib.Path:
+    # Create a deterministic inventory for repeatable stage2/3 runs.
     dest = cache_root / project_hash / project_dir.name
     dest.mkdir(parents=True, exist_ok=True)
     index_path = dest / "index.json"
@@ -961,7 +964,9 @@ async def stage3_trace(
     analysis_project: AnalysisProject,
     include_non_new: bool,
     writer: Optional[Callable[[dict[str, object]], None]] = None,
+    include_non_triggerable: bool = False,
 ) -> list[Stage3Trace]:
+    # Run analyzer -> dedupe -> PoV in the same order as the CRS pipeline.
     trace: list[Stage3Trace] = []
     candidates: list[AnalyzedVuln] = []
     harness = FakeHarness(name="default_harness", source="unknown")
@@ -993,6 +998,8 @@ async def stage3_trace(
             continue
         analysis_result, analysis_error = await run_vuln_analyzer(fake_crs, record)
         analysis_payload = _analysis_summary(analysis_result, analysis_error)
+        if analysis_payload.get("triggerable") is not True and not include_non_triggerable:
+            continue
         analyzed_for_dedupe = analyzed
         if analysis_result is not None and analysis_result.positive is not None:
             analyzed_for_dedupe = analysis_result.positive
@@ -1047,6 +1054,7 @@ async def run(args: argparse.Namespace) -> None:
         os.environ["CLASSIFIER_ALLOW_STRUCTURED"] = "1"
 
     if not args.skip_testflight:
+        # Fail fast if the selected model cannot be reached.
         await run_testflight(args.model)
 
     project_name = args.project_name or target.name
@@ -1068,6 +1076,7 @@ async def run(args: argparse.Namespace) -> None:
     analysis_source = target
     ingest_meta: dict[str, object] = {"enabled": not args.skip_ingest}
     if not args.skip_ingest:
+        # Stage 0 indexing provides stable file lists for later stages.
         cache_root = args.cache_dir
         cache_root.mkdir(parents=True, exist_ok=True)
         project_hash = args.project_hash or await compute_project_hash(target)
@@ -1173,6 +1182,7 @@ async def run(args: argparse.Namespace) -> None:
         project,
         args.include_non_new,
         writer=jsonl_writer,
+        include_non_triggerable=args.include_non_triggerable,
     )
 
     output = {
@@ -1270,6 +1280,11 @@ def parse_args() -> argparse.Namespace:
         "--include-non-new",
         action="store_true",
         help="include non-NEW dedupe entries in stage3_trace",
+    )
+    _ = parser.add_argument(
+        "--include-non-triggerable",
+        action="store_true",
+        help="include non-triggerable analyzer results in stage3_trace",
     )
     _ = parser.add_argument(
         "--no-progress", action="store_true", help="disable progress bars"
