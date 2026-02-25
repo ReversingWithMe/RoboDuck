@@ -78,6 +78,15 @@ _ = os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 
 def load_env_from_file(path: pathlib.Path, silent: bool = False) -> dict[str, str]:
+    """Load key=value pairs from a dotenv-style file.
+
+    Args:
+        path: Path to the dotenv file.
+        silent: If True, suppress stdout logging.
+
+    Returns:
+        A dict of variables that were loaded.
+    """
     loaded: dict[str, str] = {}
     if not path.exists():
         return loaded
@@ -106,6 +115,11 @@ def progress_bar(total: int, enabled: bool, label: str):
 
 
 async def run_testflight(model: str) -> None:
+    """Verify LLM connectivity with a minimal prompt.
+
+    Args:
+        model: Model name passed to the LLM API.
+    """
     messages = [
         {"role": "system", "content": "You are a testflight probe."},
         {"role": "user", "content": "Respond with OK."},
@@ -206,6 +220,11 @@ class FakeProjectInfo:
 
 
 class FakeSearcher:
+    """Minimal searcher shim for local analyzer runs.
+
+    Provides the subset of searcher tools used by CRS agents while operating
+    directly on the in-memory AnalysisProject.
+    """
     def __init__(self, analysis_project: AnalysisProject):
         self.analysis_project = analysis_project
         # Tool schemas rely on real type annotations, so resolve them early.
@@ -242,6 +261,14 @@ class FakeSearcher:
         return start + 1, end + 1
 
     async def list_definitions(self, path: str) -> Result[list[LineDefinition]]:
+        """List symbol definitions for a given file path.
+
+        Args:
+            path: File path to scan.
+
+        Returns:
+            Result with a list of definitions or an error.
+        """
         sf = self._resolve_file(path)
         if sf is None:
             return Err(CRSError("file does not exist"))
@@ -262,6 +289,17 @@ class FakeSearcher:
         line_number: Optional[int] = None,
         display_lines: bool = True,
     ) -> Result[dict[str, object]]:
+        """Read the definition body for a symbol.
+
+        Args:
+            name: Symbol name to resolve.
+            path: Optional file path hint.
+            line_number: Optional line number hint.
+            display_lines: Whether to include line numbers in output.
+
+        Returns:
+            Result with source contents or an error.
+        """
         _ = line_number, display_lines
         candidates = []
         for member in self.analysis_project.decls:
@@ -301,6 +339,17 @@ class FakeSearcher:
         line_number: Optional[int] = None,
         line_range: Optional[str] = None,
     ) -> Result[dict[str, object]]:
+        """Read a slice of source code around a line or range.
+
+        Args:
+            file_name: File path to read.
+            path: Alias for file_name.
+            line_number: Center line to read around.
+            line_range: Range string ("start,end" or "start:end").
+
+        Returns:
+            Result with source contents or an error.
+        """
         target = file_name or path
         if target is None:
             return Err(CRSError("file_name or path is required"))
@@ -379,6 +428,16 @@ class FakeSearcher:
         path: Optional[str] = None,
         case_insensitive: bool = False,
     ) -> Result[list[FileReferences]]:
+        """Find references to a symbol in the source tree.
+
+        Args:
+            name: Symbol to search for.
+            path: Optional file path filter.
+            case_insensitive: Whether to ignore case.
+
+        Returns:
+            Result with reference locations or an error.
+        """
         refs: list[FileReferences] = []
         if case_insensitive:
             needle = name.lower()
@@ -417,6 +476,11 @@ class FakeSearcher:
 
 @dataclass
 class FakeCRS:
+    """Local CRS-like container for agents.
+
+    Holds project metadata, harness stubs, and the in-memory AnalysisProject so
+    CRS agents can run without the full task runtime.
+    """
     project: FakeProject
     harnesses: list[FakeHarness]
     root_dir: pathlib.Path
@@ -444,6 +508,7 @@ class FakeCRS:
 
 @dataclass
 class FakePovCRS(FakeCRS):
+    """CRS shim with lightweight source question handling for PoV agents."""
     current_file: Optional[pathlib.Path] = None
 
     async def source_code_questions(
@@ -523,6 +588,7 @@ class FakePovCRS(FakeCRS):
 
 
 class LimitedPovProducerAgent(CRSPovProducerAgent):
+    """PoV agent constrained to source_questions-only tools."""
     @cached_property
     def _tools(self):
         def resolve_annotations(fn: Any) -> Any:
@@ -543,12 +609,23 @@ class LimitedPovProducerAgent(CRSPovProducerAgent):
 
 @dataclass
 class FakePovAgentContext:
+    """Lightweight context object for ad-hoc prompt calls."""
     crs: FakeCRS
     vuln: AnalyzedVuln
     close_pov: Optional[tuple[str, str, str]] = None
 
 
 async def run_prompt(agent_name: str, model: str, agent_context: object) -> str:
+    """Run a single prompt against the LLM without tools.
+
+    Args:
+        agent_name: Prompt name to resolve from the prompt manager.
+        model: Model to use for the completion.
+        agent_context: Context object used to render the prompt.
+
+    Returns:
+        Raw text content of the model response (or an error string).
+    """
     bound = prompt_manager.model(model).bind(
         agent_name, kwargs={"agent": agent_context}
     )
@@ -575,6 +652,16 @@ async def run_prompt(agent_name: str, model: str, agent_context: object) -> str:
 
 
 async def run_pov_agent(crs: FakePovCRS, vuln: AnalyzedVuln, model_idx: int = 0) -> str:
+    """Run the constrained PoV agent and return a serialized result.
+
+    Args:
+        crs: CRS shim used by the agent.
+        vuln: Analyzed vulnerability context.
+        model_idx: Index into the model map for this agent.
+
+    Returns:
+        JSON string containing the agent response.
+    """
     harnesses = [
         Harness(
             name=crs.harnesses[0].name,
@@ -616,6 +703,15 @@ async def run_pov_agent(crs: FakePovCRS, vuln: AnalyzedVuln, model_idx: int = 0)
 def _analysis_summary(
     result: Optional[VulnAnalysis], error: Optional[str]
 ) -> dict[str, object]:
+    """Normalize analyzer output into a JSON-serializable payload.
+
+    Args:
+        result: The analyzer result, if any.
+        error: Error string if the analyzer failed.
+
+    Returns:
+        Dict with triggerable/positive/negative fields.
+    """
     if result is None:
         return {
             "triggerable": None,
@@ -631,6 +727,15 @@ def _analysis_summary(
 
 
 def _merge_pov_note(pov_note: str, analysis_payload: dict[str, object]) -> str:
+    """Embed analysis metadata into the PoV note payload.
+
+    Args:
+        pov_note: Existing PoV note (JSON or plain text).
+        analysis_payload: Normalized analyzer output.
+
+    Returns:
+        Updated PoV note with embedded analysis data.
+    """
     try:
         data = json.loads(pov_note)
         if isinstance(data, dict):
@@ -645,6 +750,15 @@ async def run_vuln_analyzer(
     crs: FakeCRS, record: Stage2Record
 ) -> tuple[Optional[VulnAnalysis], Optional[str]]:
     # Mirror CRS analyzer behavior so local runs get comparable triggerability judgments.
+    """Run the CRS analyzer agent for a single report.
+
+    Args:
+        crs: CRS shim to provide tool access.
+        record: Stage 2 record to analyze.
+
+    Returns:
+        Tuple of (analysis result or None, error message or None).
+    """
     report = VulnReport(
         task_uuid=uuid.uuid4(),
         project_name=crs.project.name,
@@ -690,6 +804,15 @@ async def run_vuln_analyzer(
 def resolve_file_filters(
     src_dir: pathlib.Path, raw_filters: list[str]
 ) -> list[pathlib.Path]:
+    """Resolve CLI file filters into absolute paths.
+
+    Args:
+        src_dir: Root directory for relative filters.
+        raw_filters: Raw filter strings from CLI.
+
+    Returns:
+        Deduplicated list of resolved paths.
+    """
     resolved: list[pathlib.Path] = []
     seen: set[str] = set()
     for raw in raw_filters:
@@ -711,6 +834,15 @@ def resolve_file_filters(
 def _path_matches_file_filters(
     path: pathlib.Path, file_filters: list[pathlib.Path]
 ) -> bool:
+    """Check whether a path matches any selected file filter.
+
+    Args:
+        path: Candidate path.
+        file_filters: List of allowed files/directories.
+
+    Returns:
+        True if the path matches, otherwise False.
+    """
     if not file_filters:
         return True
     for selected in file_filters:
@@ -724,6 +856,15 @@ def _path_matches_file_filters(
 def scan_source_files(
     src_dir: pathlib.Path, file_filters: Optional[list[pathlib.Path]] = None
 ) -> Iterator[pathlib.Path]:
+    """Yield supported source files under a directory.
+
+    Args:
+        src_dir: Root directory to scan.
+        file_filters: Optional list of file path filters.
+
+    Yields:
+        Paths to supported source files.
+    """
     selected_filters = file_filters or []
     for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
@@ -741,6 +882,14 @@ def scan_source_files(
 async def parse_source_file(
     path: pathlib.Path,
 ) -> tuple[SourceFile, list[SourceMember]]:
+    """Parse a source file into tree-sitter declarations.
+
+    Args:
+        path: Source file path.
+
+    Returns:
+        Tuple of SourceFile and parsed declarations.
+    """
     source = path.read_bytes()
     sf = SourceFile(str(path), source)
     parser = (
@@ -755,6 +904,16 @@ async def build_analysis_project(
     use_progress: bool,
     file_filters: Optional[list[pathlib.Path]] = None,
 ) -> AnalysisProject:
+    """Build an AnalysisProject from the given source tree.
+
+    Args:
+        src_dir: Root directory to scan.
+        use_progress: Whether to display progress bars.
+        file_filters: Optional list of file filters.
+
+    Returns:
+        Populated AnalysisProject.
+    """
     project = AnalysisProject()
     paths = list(scan_source_files(src_dir, file_filters=file_filters))
     # Fail fast when the input tree has no relevant sources.
@@ -778,6 +937,14 @@ DEFAULT_CACHE_ROOT = pathlib.Path(os.fspath(config.CACHE_DIR)) / "stage033-inges
 
 
 async def compute_project_hash(project_dir: pathlib.Path) -> str:
+    """Compute a stable hash for caching.
+
+    Args:
+        project_dir: Directory to hash.
+
+    Returns:
+        Hex digest representing current repository state.
+    """
     def _inner() -> str:
         if (project_dir / ".git").is_dir():
             try:
@@ -807,6 +974,18 @@ async def stage0_index(
     excludes: set[str],
     use_progress: bool,
 ) -> pathlib.Path:
+    """Write a lightweight file inventory for repeatable analysis.
+
+    Args:
+        project_dir: Repository root.
+        cache_root: Cache directory root.
+        project_hash: Hash of the repository state.
+        excludes: Directory/file names to skip.
+        use_progress: Whether to display progress bars.
+
+    Returns:
+        Path to the generated index.json file.
+    """
     # Create a deterministic inventory for repeatable stage2/3 runs.
     dest = cache_root / project_hash / project_dir.name
     dest.mkdir(parents=True, exist_ok=True)
@@ -853,6 +1032,14 @@ async def stage0_index(
 
 
 def report_to_dict(report: AnnotatedReport) -> dict[str, object]:
+    """Convert an annotated report into a serializable dict.
+
+    Args:
+        report: Annotated report from stage2 analysis.
+
+    Returns:
+        Dictionary suitable for JSON output.
+    """
     summary = getattr(report.report, "summary", "")
     try:
         body_dict = asdict(report.report)
@@ -871,6 +1058,15 @@ def report_to_dict(report: AnnotatedReport) -> dict[str, object]:
 
 
 def compute_quantile_threshold(scores: list[float], q: float) -> float:
+    """Compute a quantile threshold with basic validation.
+
+    Args:
+        scores: List of scores.
+        q: Quantile in (0, 1).
+
+    Returns:
+        The q-quantile value, or 0 when scores are empty.
+    """
     if not scores:
         return 0.0
     if not 0 < q < 1:
@@ -883,6 +1079,16 @@ def compute_quantile_threshold(scores: list[float], q: float) -> float:
 def flatten_stage2_reports(
     annotated_reports: list[AnnotatedReport], stage_label: str, model: str | None
 ) -> list[Stage2Record]:
+    """Normalize stage2 reports into flat records.
+
+    Args:
+        annotated_reports: Reports returned by stage2 analysis.
+        stage_label: Label for the analysis mode (single/multi).
+        model: Model name used for the analysis.
+
+    Returns:
+        Flat list of Stage2Record entries.
+    """
     flattened: list[Stage2Record] = []
     for report in annotated_reports:
         body_range = getattr(report.member, "body", report.member.range)
@@ -908,11 +1114,13 @@ def flatten_stage2_reports(
 
 
 async def stage2_single(project: AnalysisProject, model: str) -> list[Stage2Record]:
+    """Run single-function analysis and normalize results."""
     _, annotated = await analyze_project(project, model=model)
     return flatten_stage2_reports(annotated, "single", model)
 
 
 async def stage2_multi(project: AnalysisProject, model: str) -> list[Stage2Record]:
+    """Run multi-function analysis and normalize results."""
     _, annotated = await analyze_project_multifunc(project, model=model)
     return flatten_stage2_reports(annotated, "multi", model)
 
@@ -920,6 +1128,7 @@ async def stage2_multi(project: AnalysisProject, model: str) -> list[Stage2Recor
 async def stage3_scoring(
     records: Iterable[Stage2Record], project_name: str, batch_size: int
 ) -> list[Stage3Score]:
+    """Score records with the LikelyVulnClassifier."""
     return await stage3_scoring_with_writer(
         records, project_name, batch_size, writer=None
     )
@@ -931,6 +1140,17 @@ async def stage3_scoring_with_writer(
     batch_size: int,
     writer: Optional[Callable[[dict[str, object]], None]],
 ) -> list[Stage3Score]:
+    """Score records and optionally stream results.
+
+    Args:
+        records: Stage2 records to score.
+        project_name: Project identifier for classifier context.
+        batch_size: Batch size for classifier calls.
+        writer: Optional callback to stream score entries.
+
+    Returns:
+        List of Stage3Score entries.
+    """
     scored: list[Stage3Score] = []
     for idx, record in enumerate(records, start=1):
         vuln_text = record["description"]
@@ -966,6 +1186,23 @@ async def stage3_trace(
     writer: Optional[Callable[[dict[str, object]], None]] = None,
     include_non_triggerable: bool = False,
 ) -> list[Stage3Trace]:
+    """Run analyzer, dedupe, and PoV stages for qualified records.
+
+    Args:
+        records: Stage2 records to trace.
+        project_name: Project identifier for classifier context.
+        batch_size: Batch size for classifier calls.
+        model: Model name for stage3 PoV prompts.
+        score_threshold: Minimum likely score to process a record.
+        root_dir: Repository root.
+        analysis_project: Parsed source project.
+        include_non_new: Whether to keep non-NEW dedupe entries.
+        writer: Optional callback to stream trace entries.
+        include_non_triggerable: Whether to keep non-triggerable analyzer results.
+
+    Returns:
+        List of Stage3Trace entries.
+    """
     # Run analyzer -> dedupe -> PoV in the same order as the CRS pipeline.
     trace: list[Stage3Trace] = []
     candidates: list[AnalyzedVuln] = []
@@ -1035,6 +1272,7 @@ async def stage3_trace(
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Orchestrate stage0/2/3 analysis for a local repository."""
     target = pathlib.Path(args.directory).resolve()
     if not target.exists():
         raise SystemExit(f"{target} does not exist")
@@ -1224,6 +1462,7 @@ DEFAULT_MODEL_MULTI = (
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the stage023 runner."""
     parser = argparse.ArgumentParser(
         description="Run only stage 2/3 analysis on a local repo"
     )
