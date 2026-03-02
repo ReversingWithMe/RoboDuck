@@ -23,6 +23,25 @@ python3 stage023_runner.py <directory> \
   --model-multi "openai/openai_gpt-oss-20b@q6_k"
 ```
 
+Offline install (build on one machine, run on another):
+- Assumes you have a PyPI mirror and want to run on a system without Rust/Cargo.
+- Build wheels on a machine with Rust toolchain:
+  ```
+  python3 -m venv .venv
+  . .venv/bin/activate
+  python -m pip install -U pip wheel build maturin
+  python -m pip wheel . -w ./wheelhouse
+  # Optionally download deps into wheelhouse
+  python -m pip download -r requirements.txt -d ./wheelhouse
+  ```
+- Copy `wheelhouse/` to the offline machine and install from it:
+  ```
+  python3 -m venv .venv
+  . .venv/bin/activate
+  python -m pip install --no-index --find-links ./wheelhouse theori_roboduck
+  ```
+- Configure your local LLM endpoint on the offline machine and run `stage023_runner.py`.
+
 More information about this CRS (including blog posts, information about the previous version, and
 some agent traces produced by running this software) can be found
 [here](https://theori-io.github.io/aixcc-public/index.html).
